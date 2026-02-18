@@ -1,8 +1,8 @@
-# CLAUDE.md
+# .cursorrules
 이 프로젝트는 SDD 방식으로 개발합니다.
 공통 개발 지침: .ai/instructions.md를 반드시 먼저 읽으세요.
 스펙 문서: specs/ 디렉토리를 참조하세요.
 
-## Claude Code 전용 설정
-- 복잡한 아키텍처 변경, 신규 앱 생성 등 핵심 작업 담당
+## Cursor 전용 설정
+- 단순 CRUD, 버그 수정 등 단순 작업 담당
 - ...
