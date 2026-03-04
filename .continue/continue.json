@@ -1,0 +1,10 @@
+{
+    "models": [
+      {
+        "title": "Claude Sonnet",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "apiKey": "$CLAUDE_API_KEY"
+      }
+    ]
+}
