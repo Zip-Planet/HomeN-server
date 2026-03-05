@@ -65,6 +65,8 @@
 Apple 인가 코드로 로그인 또는 회원가입을 처리합니다.
 `SocialAccount`에 `(apple, provider_id)`가 없으면 신규 유저를 생성합니다.
 
+> **Android 환경**: iOS Native(Bundle ID)와 달리 Android/웹에서는 Apple **Service ID**를 `APPLE_CLIENT_ID`로 사용하고 `APPLE_REDIRECT_URI` 설정이 필요합니다.
+
 **Request Body**
 ```json
 {
@@ -106,6 +108,18 @@ Access 토큰을 갱신합니다.
 - Access 토큰 만료: 1시간
 - Refresh 토큰 만료: 7일
 - Header: `Authorization: Bearer <access_token>`
+
+## 필수 환경 변수
+| 변수 | 설명 |
+|------|------|
+| `KAKAO_REST_API_KEY` | 카카오 REST API 키 |
+| `KAKAO_CLIENT_SECRET` | 카카오 Client Secret (보안 강화 시 사용) |
+| `KAKAO_REDIRECT_URI` | 카카오 Redirect URI |
+| `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `APPLE_CLIENT_ID` | iOS: Bundle ID / Android·웹: Service ID |
+| `APPLE_KEY_ID` | Apple Sign In Key ID |
+| `APPLE_PRIVATE_KEY` | Apple ES256 개인키 (줄바꿈은 `\n`으로 입력) |
+| `APPLE_REDIRECT_URI` | Apple Redirect URI (Android·웹 플로우에서 필수) |
 
 ---
 

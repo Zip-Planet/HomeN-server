@@ -3,6 +3,7 @@ import time
 import jwt
 import requests
 from django.conf import settings
+from django.db import transaction
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.users.models import SocialAccount, User
@@ -44,8 +45,9 @@ def _get_or_create_social_user(*, provider: str, provider_id: str) -> User:
     if social:
         return social.user
 
-    user = User.objects.create_user()
-    SocialAccount.objects.create(user=user, provider=provider, provider_id=provider_id)
+    with transaction.atomic():
+        user = User.objects.create_user()
+        SocialAccount.objects.create(user=user, provider=provider, provider_id=provider_id)
     return user
 
 
@@ -176,6 +178,7 @@ def _exchange_apple_code(code: str, client_secret: str) -> dict:
             "grant_type": "authorization_code",
             "client_id": settings.APPLE_CLIENT_ID,
             "client_secret": client_secret,
+            "redirect_uri": settings.APPLE_REDIRECT_URI,
             "code": code,
         },
         timeout=10,
