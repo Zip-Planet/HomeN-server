@@ -104,4 +104,5 @@ APPLE_KEY_ID = env("APPLE_KEY_ID", default="APPLE_KEY_ID_PLACEHOLDER")
 APPLE_PRIVATE_KEY = env(
     "APPLE_PRIVATE_KEY",
     default="-----BEGIN EC PRIVATE KEY-----\nPLACEHOLDER\n-----END EC PRIVATE KEY-----",
-)
+).replace("\\n", "\n")
+APPLE_REDIRECT_URI = env("APPLE_REDIRECT_URI", default="https://localhost/api/v1/auth/apple/")
