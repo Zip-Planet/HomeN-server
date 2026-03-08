@@ -1,10 +1,17 @@
 import factory
 
-from apps.users.models import SocialAccount, User
+from apps.users.models import ProfileImage, SocialAccount, User
+
+
+class ProfileImageFactory(factory.django.DjangoModelFactory):
+    image = factory.django.ImageField(color="blue", width=100, height=100)
+
+    class Meta:
+        model = ProfileImage
 
 
 class UserFactory(factory.django.DjangoModelFactory):
-    name = factory.Sequence(lambda n: f"User {n}")
+    name = factory.Sequence(lambda n: f"user{n}")
 
     class Meta:
         model = User

@@ -3,8 +3,8 @@ from unittest.mock import patch
 import pytest
 
 from apps.users.models import SocialAccount, User
-from apps.users.services import SocialLoginError, apple_login, kakao_login
-from apps.users.tests.factories import SocialAccountFactory, UserFactory
+from apps.users.services import ProfileUpdateError, SocialLoginError, apple_login, kakao_login, update_profile
+from apps.users.tests.factories import ProfileImageFactory, SocialAccountFactory, UserFactory
 
 KAKAO_USER_INFO = {
     "id": 123456789,
@@ -24,12 +24,13 @@ class TestKakaoLogin:
         mock_exchange.return_value = {"access_token": "fake-token"}
         mock_user_info.return_value = KAKAO_USER_INFO
 
-        tokens = kakao_login(code="auth-code")
+        result = kakao_login(code="auth-code")
 
         assert User.objects.count() == 1
         assert SocialAccount.objects.filter(provider="kakao", provider_id="123456789").exists()
-        assert "access" in tokens
-        assert "refresh" in tokens
+        assert "access" in result
+        assert "refresh" in result
+        assert result["is_profile_set"] is False
 
     @patch("apps.users.services._exchange_kakao_code")
     @patch("apps.users.services._get_kakao_user_info")
@@ -61,12 +62,13 @@ class TestAppleLogin:
         mock_exchange.return_value = {"id_token": "fake-id-token"}
         mock_decode.return_value = APPLE_ID_TOKEN_PAYLOAD
 
-        tokens = apple_login(code="auth-code")
+        result = apple_login(code="auth-code")
 
         assert User.objects.count() == 1
         assert SocialAccount.objects.filter(provider="apple", provider_id="apple.user.id.001").exists()
-        assert "access" in tokens
-        assert "refresh" in tokens
+        assert "access" in result
+        assert "refresh" in result
+        assert result["is_profile_set"] is False
 
     @patch("apps.users.services._generate_apple_client_secret")
     @patch("apps.users.services._exchange_apple_code")
@@ -90,3 +92,36 @@ class TestAppleLogin:
 
         with pytest.raises(SocialLoginError):
             apple_login(code="bad-code")
+
+
+@pytest.mark.django_db
+class TestUpdateProfile:
+    def test_sets_nickname_and_profile_image(self):
+        user = UserFactory(name="")
+        image = ProfileImageFactory()
+
+        updated = update_profile(user=user, name="홍길동", profile_image=image)
+
+        assert updated.name == "홍길동"
+        assert updated.profile_image == image.image.name
+        assert updated.is_profile_set is True
+
+    def test_raises_on_duplicate_nickname(self):
+        UserFactory(name="홍길동")
+        other_user = UserFactory(name="")
+        image = ProfileImageFactory()
+
+        with pytest.raises(ProfileUpdateError):
+            update_profile(user=other_user, name="홍길동", profile_image=image)
+
+    def test_allows_keeping_own_nickname(self):
+        image = ProfileImageFactory()
+        user = UserFactory(name="홍길동")
+        user.profile_image = image.image.name
+        user.save()
+        new_image = ProfileImageFactory()
+
+        updated = update_profile(user=user, name="홍길동", profile_image=new_image)
+
+        assert updated.name == "홍길동"
+        assert updated.profile_image == new_image.image.name

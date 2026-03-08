@@ -1,12 +1,19 @@
 from rest_framework import status
-from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.users import services
-from apps.users.serializers import AppleLoginSerializer, KakaoLoginSerializer, TokenOutputSerializer
+from apps.users import selectors, services
+from apps.users.serializers import (
+    AppleLoginSerializer,
+    KakaoLoginSerializer,
+    ProfileImageSerializer,
+    TokenOutputSerializer,
+    UserProfileOutputSerializer,
+    UserProfileUpdateSerializer,
+)
 
 
 class KakaoLoginView(APIView):
@@ -17,11 +24,11 @@ class KakaoLoginView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            tokens = services.kakao_login(**serializer.validated_data)
+            result = services.kakao_login(**serializer.validated_data)
         except services.SocialLoginError as e:
             raise AuthenticationFailed(str(e)) from e
 
-        return Response(TokenOutputSerializer(tokens).data, status=status.HTTP_200_OK)
+        return Response(TokenOutputSerializer(result).data, status=status.HTTP_200_OK)
 
 
 class AppleLoginView(APIView):
@@ -32,8 +39,37 @@ class AppleLoginView(APIView):
         serializer.is_valid(raise_exception=True)
 
         try:
-            tokens = services.apple_login(**serializer.validated_data)
+            result = services.apple_login(**serializer.validated_data)
         except services.SocialLoginError as e:
             raise AuthenticationFailed(str(e)) from e
 
-        return Response(TokenOutputSerializer(tokens).data, status=status.HTTP_200_OK)
+        return Response(TokenOutputSerializer(result).data, status=status.HTTP_200_OK)
+
+
+class UserMeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request: Request) -> Response:
+        """현재 로그인한 유저의 프로필을 반환합니다."""
+        return Response(UserProfileOutputSerializer(request.user, context={"request": request}).data)
+
+    def patch(self, request: Request) -> Response:
+        """현재 로그인한 유저의 닉네임과 프로필 이미지를 업데이트합니다."""
+        serializer = UserProfileUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            user = services.update_profile(user=request.user, **serializer.validated_data)
+        except services.ProfileUpdateError as e:
+            raise ValidationError({"duplicate_nickname": str(e)}) from e
+
+        return Response(UserProfileOutputSerializer(user, context={"request": request}).data)
+
+
+class ProfileImageListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        """사용 가능한 프리셋 프로필 이미지 목록을 반환합니다."""
+        images = selectors.get_profile_images()
+        return Response(ProfileImageSerializer(images, many=True, context={"request": request}).data)

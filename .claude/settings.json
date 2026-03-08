@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat -anp tcp)",
+      "Bash(ss -tlnp)",
+      "Bash(docker system prune -f)",
+      "Bash(docker network prune -f)",
+      "Bash(lsof -nP -iTCP:8000)",
+      "Bash(fuser 8000/tcp)",
+      "Bash(lsof -nP -i4TCP:8000 -sTCP:LISTEN)",
+      "Bash(docker network ls)",
+      "Bash(docker network inspect bridge --format '{{range .Containers}}{{.Name}}: {{.IPv4Address}}{{\"\"\\\\n\"\"}}{{end}}')",
+      "Bash(docker network rm homen-server_default)",
+      "Bash(docker network inspect homen-server_default --format '{{range .Containers}}ID: {{.Name}} IP: {{.IPv4Address}}{{\"\"\\\\n\"\"}}{{end}}')",
+      "Bash(docker rm homen-server-app-1)",
+      "Bash(docker compose exec app python manage.py migrate)",
+      "Bash(docker compose exec app uv run python manage.py migrate)",
+      "Bash(echo \"exit:$?\")"
+    ]
+  }
+}
