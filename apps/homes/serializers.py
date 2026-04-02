@@ -1,0 +1,149 @@
+import re
+
+from rest_framework import serializers
+
+from apps.homes.models import Chore, Home, HomeImage, HomeMember, Reward, StarterPack
+
+
+class HomeImageSerializer(serializers.ModelSerializer):
+    """집 이미지 출력 시리얼라이저."""
+
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HomeImage
+        fields = ["id", "url"]
+
+    def get_url(self, obj: HomeImage) -> str:
+        """절대 URL을 반환합니다."""
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+
+class HomeCreateSerializer(serializers.Serializer):
+    """집 생성 입력 시리얼라이저 (1단계)."""
+
+    name = serializers.CharField(max_length=10)
+    image_id = serializers.IntegerField()
+
+    def validate_name(self, value: str) -> str:
+        """집 이름 규칙: 한글·영문·숫자·공백만 허용, 공백 단독 불가."""
+        if not re.match(r"^[가-힣a-zA-Z0-9 ]+$", value):
+            raise serializers.ValidationError("집 이름은 한글, 영문, 숫자, 띄어쓰기만 사용할 수 있습니다.")
+        if value.strip() == "":
+            raise serializers.ValidationError("집 이름을 입력해 주세요.")
+        return value
+
+
+class HomeOutputSerializer(serializers.ModelSerializer):
+    """집 출력 시리얼라이저."""
+
+    image = HomeImageSerializer()
+
+    class Meta:
+        model = Home
+        fields = ["id", "name", "image", "invite_code", "creation_step", "status", "created_at"]
+
+
+class StarterPackSerializer(serializers.ModelSerializer):
+    """스타터팩 출력 시리얼라이저."""
+
+    class Meta:
+        model = StarterPack
+        fields = ["id", "name", "description"]
+
+
+class ChoreOutputSerializer(serializers.ModelSerializer):
+    """집안일 출력 시리얼라이저."""
+
+    image_url = serializers.SerializerMethodField()
+    difficulty_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Chore
+        fields = ["id", "name", "image_url", "repeat_days", "difficulty", "difficulty_label"]
+
+    def get_image_url(self, obj: Chore) -> str | None:
+        """절대 이미지 URL을 반환합니다."""
+        if not obj.image:
+            return None
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+    def get_difficulty_label(self, obj: Chore) -> str:
+        """난이도 화면 표시용 레이블을 반환합니다."""
+        return obj.get_difficulty_label()
+
+
+class HomeChoreCreateSerializer(serializers.Serializer):
+    """집안일 추가 입력 시리얼라이저 (2단계)."""
+
+    starter_pack_id = serializers.IntegerField()
+
+
+class RewardCreateSerializer(serializers.Serializer):
+    """리워드 생성 입력 시리얼라이저 (3단계, 배열로 사용)."""
+
+    name = serializers.CharField(max_length=50)
+    goal_point = serializers.IntegerField(min_value=1)
+
+
+class RewardOutputSerializer(serializers.ModelSerializer):
+    """리워드 출력 시리얼라이저."""
+
+    class Meta:
+        model = Reward
+        fields = ["id", "name", "goal_point"]
+
+
+class HomeMemberSerializer(serializers.ModelSerializer):
+    """집 구성원 출력 시리얼라이저."""
+
+    name = serializers.CharField(source="user.name")
+    profile_image = serializers.SerializerMethodField()
+    role_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HomeMember
+        fields = ["name", "profile_image", "role", "role_label"]
+
+    def get_profile_image(self, obj: HomeMember) -> str | None:
+        """구성원의 프로필 이미지 절대 URL을 반환합니다."""
+        if not obj.user.profile_image:
+            return None
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.user.profile_image.url)
+        return obj.user.profile_image.url
+
+    def get_role_label(self, obj: HomeMember) -> str:
+        """역할의 표시 이름을 반환합니다."""
+        return obj.get_role_display()
+
+
+class HomeInviteDetailSerializer(serializers.ModelSerializer):
+    """초대코드 조회 출력 시리얼라이저."""
+
+    image = HomeImageSerializer()
+    member_count = serializers.SerializerMethodField()
+    members = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Home
+        fields = ["invite_code", "name", "image", "member_count", "created_at", "members"]
+
+    def get_member_count(self, obj: Home) -> int:
+        """전체 구성원 수(관리자 포함)를 반환합니다."""
+        return obj.members.count()
+
+    def get_members(self, obj: Home) -> list:
+        """구성원 목록을 반환합니다."""
+        return HomeMemberSerializer(
+            obj.members.all(),
+            many=True,
+            context=self.context,
+        ).data

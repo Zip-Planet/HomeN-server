@@ -21,8 +21,10 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "django.contrib.postgres",
     # Local
     "apps.users",
+    "apps.homes",
 ]
 
 MIDDLEWARE = [
