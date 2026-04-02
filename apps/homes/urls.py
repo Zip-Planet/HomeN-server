@@ -18,11 +18,11 @@ home_urlpatterns = [
     path("mine/", HomeDetailView.as_view()),
     path("invite/<str:code>/", HomeInviteView.as_view()),
     path("join/", HomeJoinView.as_view()),
-    path("<int:pk>/chores/", HomeChoreView.as_view()),
-    path("<int:pk>/rewards/", HomeRewardView.as_view()),
+    path("<int:home_id>/chores/", HomeChoreView.as_view()),
+    path("<int:home_id>/rewards/", HomeRewardView.as_view()),
 ]
 
 starter_pack_urlpatterns = [
     path("", StarterPackListView.as_view()),
-    path("<int:pk>/chores/", StarterPackChoreListView.as_view()),
+    path("<int:starter_pack_id>/chores/", StarterPackChoreListView.as_view()),
 ]

@@ -1,7 +1,10 @@
 from django.urls import path
+from drf_spectacular.utils import extend_schema
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from apps.users.views import AppleLoginView, KakaoLoginView, ProfileImageListView, UserMeView
+
+TokenRefreshView = extend_schema(tags=["Auth"], summary="액세스 토큰 갱신")(TokenRefreshView)
 
 auth_urlpatterns = [
     path("kakao/", KakaoLoginView.as_view(), name="kakao-login"),
