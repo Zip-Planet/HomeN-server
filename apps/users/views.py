@@ -1,3 +1,4 @@
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -19,6 +20,16 @@ from apps.users.serializers import (
 class KakaoLoginView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["Auth"],
+        summary="카카오 소셜 로그인",
+        request=KakaoLoginSerializer,
+        responses={
+            200: TokenOutputSerializer,
+            400: OpenApiResponse(description="인증 코드 누락"),
+            401: OpenApiResponse(description="카카오 인증 실패"),
+        },
+    )
     def post(self, request: Request) -> Response:
         serializer = KakaoLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -34,6 +45,16 @@ class KakaoLoginView(APIView):
 class AppleLoginView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["Auth"],
+        summary="애플 소셜 로그인",
+        request=AppleLoginSerializer,
+        responses={
+            200: TokenOutputSerializer,
+            400: OpenApiResponse(description="인증 코드 누락"),
+            401: OpenApiResponse(description="애플 인증 실패"),
+        },
+    )
     def post(self, request: Request) -> Response:
         serializer = AppleLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -49,10 +70,24 @@ class AppleLoginView(APIView):
 class UserMeView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Users"],
+        summary="내 프로필 조회",
+        responses={200: UserProfileOutputSerializer},
+    )
     def get(self, request: Request) -> Response:
         """현재 로그인한 유저의 프로필을 반환합니다."""
         return Response(UserProfileOutputSerializer(request.user, context={"request": request}).data)
 
+    @extend_schema(
+        tags=["Users"],
+        summary="내 프로필 수정",
+        request=UserProfileUpdateSerializer,
+        responses={
+            200: UserProfileOutputSerializer,
+            400: OpenApiResponse(description="유효성 검사 실패 또는 닉네임 중복"),
+        },
+    )
     def patch(self, request: Request) -> Response:
         """현재 로그인한 유저의 닉네임과 프로필 이미지를 업데이트합니다."""
         serializer = UserProfileUpdateSerializer(data=request.data)
@@ -69,6 +104,11 @@ class UserMeView(APIView):
 class ProfileImageListView(APIView):
     permission_classes = [AllowAny]
 
+    @extend_schema(
+        tags=["Users"],
+        summary="프리셋 프로필 이미지 목록 조회",
+        responses={200: ProfileImageSerializer(many=True)},
+    )
     def get(self, request: Request) -> Response:
         """사용 가능한 프리셋 프로필 이미지 목록을 반환합니다."""
         images = selectors.get_profile_images()
