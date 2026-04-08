@@ -89,3 +89,20 @@ View는 얇게 → Service에 위임. 쿼리 로직은 Selector에 분리.
 - 모든 스펙은 `specs/` 디렉토리에 위치.
 - 구현 전 반드시 관련 스펙을 먼저 읽을 것.
 - 스펙에 정의되지 않은 기능은 임의로 구현하지 말 것.
+
+---
+
+## Swagger (drf-spectacular) 컨벤션
+
+- **추가 시점**: 엔드포인트의 `test_views.py` 테스트가 모두 통과된 후에만 `@extend_schema` 데코레이터를 추가한다.
+- **위치**: view 메서드 바로 위에 `@extend_schema` 데코레이터를 붙인다.
+- **필수 필드**: `tags`, `summary`, `request`(입력 있는 경우), `responses`.
+- **태그**: 앱 단위로 통일 — `Auth`, `Users`, `Homes`, `StarterPacks` 등.
+- **응답**: 성공 시 시리얼라이저 클래스, 실패 시 `OpenApiResponse(description="...")`.
+- **URL**: `/api/docs/` — Swagger UI, `/api/schema/` — OpenAPI YAML.
+- **Third-party 뷰 태그 지정**: urls.py에서 `extend_schema(...)(View)` 패턴으로 래핑.
+
+### 신규 기능 체크리스트
+1. `test_views.py` 테스트 작성 및 통과 확인
+2. view 메서드에 `@extend_schema` 추가
+3. `/api/docs/` 에서 렌더링 확인
