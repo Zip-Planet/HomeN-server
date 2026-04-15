@@ -1,13 +1,6 @@
 import factory
 
-from apps.users.models import ProfileImage, SocialAccount, User
-
-
-class ProfileImageFactory(factory.django.DjangoModelFactory):
-    image = factory.django.ImageField(color="blue", width=100, height=100)
-
-    class Meta:
-        model = ProfileImage
+from apps.users.models import SocialAccount, User
 
 
 class UserFactory(factory.django.DjangoModelFactory):

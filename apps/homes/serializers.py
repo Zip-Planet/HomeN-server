@@ -2,31 +2,14 @@ import re
 
 from rest_framework import serializers
 
-from apps.homes.models import Chore, Home, HomeImage, HomeMember, Reward, StarterPack
-
-
-class HomeImageSerializer(serializers.ModelSerializer):
-    """집 이미지 출력 시리얼라이저."""
-
-    url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = HomeImage
-        fields = ["id", "url"]
-
-    def get_url(self, obj: HomeImage) -> str:
-        """절대 URL을 반환합니다."""
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+from apps.homes.models import Chore, Home, HomeMember, HomeImageType, Reward, StarterPack
 
 
 class HomeCreateSerializer(serializers.Serializer):
     """집 생성 입력 시리얼라이저 (1단계)."""
 
     name = serializers.CharField(max_length=10)
-    image_id = serializers.IntegerField()
+    image_id = serializers.ChoiceField(choices=HomeImageType.choices)
 
     def validate_name(self, value: str) -> str:
         """집 이름 규칙: 한글·영문·숫자·공백만 허용, 공백 단독 불가."""
@@ -39,8 +22,6 @@ class HomeCreateSerializer(serializers.Serializer):
 
 class HomeOutputSerializer(serializers.ModelSerializer):
     """집 출력 시리얼라이저."""
-
-    image = HomeImageSerializer()
 
     class Meta:
         model = Home
@@ -58,21 +39,11 @@ class StarterPackSerializer(serializers.ModelSerializer):
 class ChoreOutputSerializer(serializers.ModelSerializer):
     """집안일 출력 시리얼라이저."""
 
-    image_url = serializers.SerializerMethodField()
     difficulty_label = serializers.SerializerMethodField()
 
     class Meta:
         model = Chore
-        fields = ["id", "name", "image_url", "repeat_days", "difficulty", "difficulty_label"]
-
-    def get_image_url(self, obj: Chore) -> str | None:
-        """절대 이미지 URL을 반환합니다."""
-        if not obj.image:
-            return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.image.url)
-        return obj.image.url
+        fields = ["id", "name", "image", "repeat_days", "difficulty", "difficulty_label"]
 
     def get_difficulty_label(self, obj: Chore) -> str:
         """난이도 화면 표시용 레이블을 반환합니다."""
@@ -104,21 +75,12 @@ class HomeMemberSerializer(serializers.ModelSerializer):
     """집 구성원 출력 시리얼라이저."""
 
     name = serializers.CharField(source="user.name")
-    profile_image = serializers.SerializerMethodField()
+    profile_image = serializers.IntegerField(source="user.profile_image", allow_null=True)
     role_label = serializers.SerializerMethodField()
 
     class Meta:
         model = HomeMember
         fields = ["name", "profile_image", "role", "role_label"]
-
-    def get_profile_image(self, obj: HomeMember) -> str | None:
-        """구성원의 프로필 이미지 절대 URL을 반환합니다."""
-        if not obj.user.profile_image:
-            return None
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.user.profile_image.url)
-        return obj.user.profile_image.url
 
     def get_role_label(self, obj: HomeMember) -> str:
         """역할의 표시 이름을 반환합니다."""
@@ -128,7 +90,6 @@ class HomeMemberSerializer(serializers.ModelSerializer):
 class HomeInviteDetailSerializer(serializers.ModelSerializer):
     """초대코드 조회 출력 시리얼라이저."""
 
-    image = HomeImageSerializer()
     member_count = serializers.SerializerMethodField()
     members = serializers.SerializerMethodField()
 
@@ -142,8 +103,4 @@ class HomeInviteDetailSerializer(serializers.ModelSerializer):
 
     def get_members(self, obj: Home) -> list:
         """구성원 목록을 반환합니다."""
-        return HomeMemberSerializer(
-            obj.members.all(),
-            many=True,
-            context=self.context,
-        ).data
+        return HomeMemberSerializer(obj.members.all(), many=True).data

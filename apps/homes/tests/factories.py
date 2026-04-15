@@ -1,19 +1,21 @@
 import factory
 
-from apps.homes.models import Chore, Home, HomeChore, HomeImage, HomeMember, Reward, StarterPack
+from apps.homes.models import (
+    Chore,
+    ChoreImageType,
+    Home,
+    HomeChore,
+    HomeImageType,
+    HomeMember,
+    Reward,
+    StarterPack,
+)
 from apps.users.tests.factories import UserFactory
-
-
-class HomeImageFactory(factory.django.DjangoModelFactory):
-    image = factory.django.ImageField(color="green", width=100, height=100)
-
-    class Meta:
-        model = HomeImage
 
 
 class HomeFactory(factory.django.DjangoModelFactory):
     name = factory.Sequence(lambda n: f"집{n}")
-    image = factory.SubFactory(HomeImageFactory)
+    image = HomeImageType.TYPE_1
     invite_code = factory.Sequence(lambda n: f"H{n:05d}")
     creation_step = Home.CreationStep.PROFILE
     status = Home.Status.DRAFT
@@ -42,7 +44,7 @@ class StarterPackFactory(factory.django.DjangoModelFactory):
 class ChoreFactory(factory.django.DjangoModelFactory):
     starter_pack = factory.SubFactory(StarterPackFactory)
     name = factory.Sequence(lambda n: f"집안일{n}")
-    image = factory.django.ImageField(color="red", width=50, height=50)
+    image = ChoreImageType.TYPE_1
     repeat_days = [0, 2, 4]
     difficulty = Chore.Difficulty.EASY
 

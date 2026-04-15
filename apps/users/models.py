@@ -4,23 +4,20 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.db import models
 
 
-class ProfileImage(models.Model):
-    """프리셋 프로필 이미지 모델.
+class UserProfileImage(models.IntegerChoices):
+    """유저 프로필 이미지 enum.
 
-    서비스에서 제공하는 선택 가능한 프로필 이미지를 나타냅니다.
-    실제 이미지 파일은 로컬 스토리지(추후 S3)에 저장됩니다.
-
-    Attributes:
-        image: 이미지 파일 (preset_profiles/ 하위 저장).
+    프론트엔드에서 값을 받아 해당하는 이미지를 렌더링합니다.
     """
 
-    image = models.ImageField(upload_to="preset_profiles/")
-
-    class Meta:
-        db_table = "profile_images"
-
-    def __str__(self) -> str:
-        return f"profile_image:{self.pk}"
+    TYPE_1 = 1, "캐릭터 1"
+    TYPE_2 = 2, "캐릭터 2"
+    TYPE_3 = 3, "캐릭터 3"
+    TYPE_4 = 4, "캐릭터 4"
+    TYPE_5 = 5, "캐릭터 5"
+    TYPE_6 = 6, "캐릭터 6"
+    TYPE_7 = 7, "캐릭터 7"
+    TYPE_8 = 8, "캐릭터 8"
 
 
 class UserManager(BaseUserManager):
@@ -70,7 +67,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     Attributes:
         uid: 자동 생성되는 고유 UUID 식별자.
         name: 서비스에서 직접 입력받는 닉네임 (최대 8자, 한글·영문·숫자).
-        profile_image: 선택된 프로필 이미지 (미설정 시 null).
+        profile_image: 선택된 프로필 이미지 enum 값 (미설정 시 null).
         is_active: 계정 활성 여부.
         is_staff: 어드민 접근 가능 여부.
         created_at: 가입 일시.
@@ -79,7 +76,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     uid = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     name = models.CharField(max_length=8, blank=True, default="")
-    profile_image = models.ImageField(null=True, blank=True, upload_to="profile_images/")
+    profile_image = models.IntegerField(choices=UserProfileImage.choices, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -106,7 +103,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_profile_set(self) -> bool:
         """닉네임과 프로필 이미지가 모두 설정된 경우 True를 반환합니다."""
-        return bool(self.name) and bool(self.profile_image)
+        return bool(self.name) and self.profile_image is not None
 
 
 class SocialAccount(models.Model):

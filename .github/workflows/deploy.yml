@@ -34,9 +34,9 @@ jobs:
           script: |
             cd /app/HomeN-server
             git pull origin main
-            docker compose up --build -d
+            docker compose -f docker-compose.dev.yml up --build -d
             sleep 10
-            docker compose exec -T app uv run python manage.py migrate
+            docker compose -f docker-compose.dev.yml exec -T app uv run python manage.py migrate
 
       - name: 보안그룹에서 Runner IP 제거
         if: always()

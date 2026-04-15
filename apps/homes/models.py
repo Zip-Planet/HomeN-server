@@ -4,20 +4,48 @@ from django.db import models
 from apps.users.models import User
 
 
-class HomeImage(models.Model):
-    """프리셋 집 이미지 모델.
+class HomeImageType(models.IntegerChoices):
+    """집 프로필 이미지 enum.
 
-    Attributes:
-        image: 이미지 파일 (preset_homes/ 하위 저장, 추후 S3).
+    프론트엔드에서 값을 받아 해당하는 이미지를 렌더링합니다.
     """
 
-    image = models.ImageField(upload_to="preset_homes/")
+    TYPE_1 = 1, "집 이미지 1"
+    TYPE_2 = 2, "집 이미지 2"
+    TYPE_3 = 3, "집 이미지 3"
+    TYPE_4 = 4, "집 이미지 4"
+    TYPE_5 = 5, "집 이미지 5"
+    TYPE_6 = 6, "집 이미지 6"
+    TYPE_7 = 7, "집 이미지 7"
+    TYPE_8 = 8, "집 이미지 8"
 
-    class Meta:
-        db_table = "home_images"
 
-    def __str__(self) -> str:
-        return f"home_image:{self.pk}"
+class ChoreImageType(models.IntegerChoices):
+    """집안일 이미지 enum.
+
+    프론트엔드에서 값을 받아 해당하는 이미지를 렌더링합니다.
+    """
+
+    TYPE_1 = 1, "집안일 이미지 1"
+    TYPE_2 = 2, "집안일 이미지 2"
+    TYPE_3 = 3, "집안일 이미지 3"
+    TYPE_4 = 4, "집안일 이미지 4"
+    TYPE_5 = 5, "집안일 이미지 5"
+    TYPE_6 = 6, "집안일 이미지 6"
+    TYPE_7 = 7, "집안일 이미지 7"
+    TYPE_8 = 8, "집안일 이미지 8"
+    TYPE_9 = 9, "집안일 이미지 9"
+    TYPE_10 = 10, "집안일 이미지 10"
+    TYPE_11 = 11, "집안일 이미지 11"
+    TYPE_12 = 12, "집안일 이미지 12"
+    TYPE_13 = 13, "집안일 이미지 13"
+    TYPE_14 = 14, "집안일 이미지 14"
+    TYPE_15 = 15, "집안일 이미지 15"
+    TYPE_16 = 16, "집안일 이미지 16"
+    TYPE_17 = 17, "집안일 이미지 17"
+    TYPE_18 = 18, "집안일 이미지 18"
+    TYPE_19 = 19, "집안일 이미지 19"
+    TYPE_20 = 20, "집안일 이미지 20"
 
 
 class Home(models.Model):
@@ -27,7 +55,7 @@ class Home(models.Model):
 
     Attributes:
         name: 집 이름 (한글·영문·숫자·공백, 최대 10자).
-        image: 선택된 프리셋 집 이미지.
+        image: 선택된 집 이미지 enum 값.
         invite_code: 6자리 초대코드 (대문자+숫자).
         creation_step: 마지막 완료 단계 (1=집 프로필, 2=집안일, 3=리워드).
         status: 생성 상태 (draft=생성 중, active=활성).
@@ -45,7 +73,7 @@ class Home(models.Model):
         ACTIVE = "active", "활성"
 
     name = models.CharField(max_length=10)
-    image = models.ForeignKey(HomeImage, on_delete=models.PROTECT, related_name="homes")
+    image = models.IntegerField(choices=HomeImageType.choices)
     invite_code = models.CharField(max_length=6, unique=True)
     creation_step = models.IntegerField(choices=CreationStep.choices, default=CreationStep.PROFILE)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
@@ -117,7 +145,7 @@ class Chore(models.Model):
     Attributes:
         starter_pack: 소속 스타터팩 (null=커스텀).
         name: 집안일 이름.
-        image: 집안일 이미지.
+        image: 집안일 이미지 enum 값.
         repeat_days: 반복 요일 목록 (Weekday enum 정수 배열).
         difficulty: 난이도 (1=하, 2=중하, 3=중, 4=중상, 5=상).
     """
@@ -146,7 +174,7 @@ class Chore(models.Model):
         related_name="chores",
     )
     name = models.CharField(max_length=50)
-    image = models.ImageField(upload_to="chores/")
+    image = models.IntegerField(choices=ChoreImageType.choices)
     repeat_days = ArrayField(models.IntegerField(choices=Weekday.choices), default=list)
     difficulty = models.IntegerField(choices=Difficulty.choices)
 

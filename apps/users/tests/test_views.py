@@ -4,8 +4,9 @@ import pytest
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.users.models import UserProfileImage
 from apps.users.services import ProfileUpdateError, SocialLoginError
-from apps.users.tests.factories import ProfileImageFactory, UserFactory
+from apps.users.tests.factories import UserFactory
 
 FAKE_TOKENS = {"access": "fake-access-token", "refresh": "fake-refresh-token", "is_profile_set": False}
 
@@ -110,27 +111,30 @@ class TestUserMeView:
     @patch("apps.users.services.update_profile")
     def test_patch_profile_success(self, mock_update, auth_client_with_user):
         api_client, user = auth_client_with_user
-        image = ProfileImageFactory()
         user.name = "홍길동"
-        user.profile_image = image.image.name
+        user.profile_image = UserProfileImage.TYPE_1
         mock_update.return_value = user
 
-        response = api_client.patch(self.url, {"name": "홍길동", "profile_image": image.pk}, format="json")
+        response = api_client.patch(
+            self.url, {"name": "홍길동", "profile_image": UserProfileImage.TYPE_1}, format="json"
+        )
 
         assert response.status_code == status.HTTP_200_OK
-        mock_update.assert_called_once_with(user=user, name="홍길동", profile_image=image)
+        mock_update.assert_called_once_with(
+            user=user, name="홍길동", profile_image=UserProfileImage.TYPE_1
+        )
 
     def test_patch_profile_invalid_name_too_long(self, auth_client):
-        image = ProfileImageFactory()
         response = auth_client.patch(
-            self.url, {"name": "아홉글자닉네임이야", "profile_image": image.pk}, format="json"
+            self.url, {"name": "아홉글자닉네임이야", "profile_image": UserProfileImage.TYPE_1}, format="json"
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
     def test_patch_profile_invalid_name_special_chars(self, auth_client):
-        image = ProfileImageFactory()
-        response = auth_client.patch(self.url, {"name": "nick!", "profile_image": image.pk}, format="json")
+        response = auth_client.patch(
+            self.url, {"name": "nick!", "profile_image": UserProfileImage.TYPE_1}, format="json"
+        )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
@@ -142,9 +146,10 @@ class TestUserMeView:
     @patch("apps.users.services.update_profile")
     def test_patch_profile_duplicate_nickname_returns_400(self, mock_update, auth_client):
         mock_update.side_effect = ProfileUpdateError("이미 사용 중인 닉네임입니다.")
-        image = ProfileImageFactory()
 
-        response = auth_client.patch(self.url, {"name": "홍길동", "profile_image": image.pk}, format="json")
+        response = auth_client.patch(
+            self.url, {"name": "홍길동", "profile_image": UserProfileImage.TYPE_1}, format="json"
+        )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "error" in response.data
@@ -154,12 +159,10 @@ class TestUserMeView:
 class TestProfileImageListView:
     url = "/api/v1/users/profile-images/"
 
-    def test_returns_profile_images(self, api_client):
-        ProfileImageFactory.create_batch(3)
-
+    def test_returns_profile_image_enum_list(self, api_client):
         response = api_client.get(self.url)
 
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data) == 3
+        assert len(response.data) == len(UserProfileImage.choices)
         assert "id" in response.data[0]
-        assert "url" in response.data[0]
+        assert response.data[0]["id"] == UserProfileImage.TYPE_1

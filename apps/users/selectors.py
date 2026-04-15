@@ -1,6 +1,4 @@
-from django.db.models import QuerySet
-
-from apps.users.models import ProfileImage, SocialAccount
+from apps.users.models import SocialAccount, UserProfileImage
 
 
 def get_social_account(provider: str, provider_id: str) -> SocialAccount | None:
@@ -16,10 +14,10 @@ def get_social_account(provider: str, provider_id: str) -> SocialAccount | None:
     return SocialAccount.objects.select_related("user").filter(provider=provider, provider_id=provider_id).first()
 
 
-def get_profile_images() -> QuerySet[ProfileImage]:
-    """사용 가능한 프리셋 프로필 이미지 목록을 반환합니다.
+def get_profile_image_choices() -> list[dict]:
+    """선택 가능한 프로필 이미지 enum 목록을 반환합니다.
 
     Returns:
-        ProfileImage QuerySet.
+        [{"id": 1}, {"id": 2}, ...] 형식의 딕셔너리 목록.
     """
-    return ProfileImage.objects.all()
+    return [{"id": value} for value, _ in UserProfileImage.choices]
