@@ -6,7 +6,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.users.models import ProfileImage, SocialAccount, User
+from apps.users.models import SocialAccount, User
 from apps.users.selectors import get_social_account
 
 
@@ -230,13 +230,13 @@ def apple_login(*, code: str) -> dict[str, str]:
     return {**_issue_tokens(user), "is_profile_set": user.is_profile_set}
 
 
-def update_profile(*, user: User, name: str, profile_image: ProfileImage) -> User:
+def update_profile(*, user: User, name: str, profile_image: int) -> User:
     """유저 프로필(닉네임, 프로필 이미지)을 업데이트합니다.
 
     Args:
         user: 업데이트할 User 인스턴스.
         name: 새로운 닉네임.
-        profile_image: 선택된 ProfileImage 인스턴스.
+        profile_image: 선택된 프로필 이미지 enum 값.
 
     Returns:
         업데이트된 User 인스턴스.
@@ -245,7 +245,7 @@ def update_profile(*, user: User, name: str, profile_image: ProfileImage) -> Use
         ProfileUpdateError: 닉네임이 이미 사용 중인 경우.
     """
     user.name = name
-    user.profile_image = profile_image.image.name
+    user.profile_image = profile_image
     try:
         user.save(update_fields=["name", "profile_image", "updated_at"])
     except IntegrityError:

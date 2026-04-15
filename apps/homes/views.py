@@ -10,7 +10,6 @@ from apps.homes.serializers import (
     ChoreOutputSerializer,
     HomeChoreCreateSerializer,
     HomeCreateSerializer,
-    HomeImageSerializer,
     HomeInviteDetailSerializer,
     HomeOutputSerializer,
     RewardCreateSerializer,
@@ -23,12 +22,11 @@ class HomeImageListView(APIView):
     @extend_schema(
         tags=["Homes"],
         summary="프리셋 집 이미지 목록 조회",
-        responses={200: HomeImageSerializer(many=True)},
+        responses={200: HomeOutputSerializer},
     )
     def get(self, request: Request) -> Response:
-        """프리셋 집 이미지 목록을 반환합니다."""
-        images = selectors.get_home_images()
-        return Response(HomeImageSerializer(images, many=True, context={"request": request}).data)
+        """선택 가능한 집 이미지 enum 목록을 반환합니다."""
+        return Response(selectors.get_home_image_choices())
 
 
 class HomeCreateView(APIView):
@@ -50,11 +48,9 @@ class HomeCreateView(APIView):
             home = services.create_home(user=request.user, **serializer.validated_data)
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
-        except services.HomeError as e:
-            raise ValidationError({"invalid_image": str(e)}) from e
 
         return Response(
-            HomeOutputSerializer(home, context={"request": request}).data,
+            HomeOutputSerializer(home).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -73,7 +69,7 @@ class HomeDetailView(APIView):
         home = selectors.get_user_home(request.user)
         if home is None:
             raise NotFound("속한 집이 없습니다.")
-        return Response(HomeOutputSerializer(home, context={"request": request}).data)
+        return Response(HomeOutputSerializer(home).data)
 
 
 class HomeChoreView(APIView):
@@ -108,7 +104,7 @@ class HomeChoreView(APIView):
             raise ValidationError({"invalid_starter_pack": str(e)}) from e
 
         return Response(
-            ChoreOutputSerializer(chores, many=True, context={"request": request}).data,
+            ChoreOutputSerializer(chores, many=True).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -162,7 +158,7 @@ class HomeInviteView(APIView):
         home = selectors.get_home_by_invite_code(code)
         if home is None:
             raise NotFound("유효하지 않은 초대코드입니다.")
-        return Response(HomeInviteDetailSerializer(home, context={"request": request}).data)
+        return Response(HomeInviteDetailSerializer(home).data)
 
 
 class HomeJoinView(APIView):
@@ -188,7 +184,7 @@ class HomeJoinView(APIView):
             raise NotFound(str(e)) from e
 
         home = selectors.get_user_home(request.user)
-        return Response(HomeOutputSerializer(home, context={"request": request}).data)
+        return Response(HomeOutputSerializer(home).data)
 
 
 class StarterPackListView(APIView):
@@ -213,4 +209,4 @@ class StarterPackChoreListView(APIView):
     def get(self, request: Request, starter_pack_id: int) -> Response:
         """특정 스타터팩의 집안일 목록을 반환합니다."""
         chores = selectors.get_starter_pack_chores(starter_pack_id)
-        return Response(ChoreOutputSerializer(chores, many=True, context={"request": request}).data)
+        return Response(ChoreOutputSerializer(chores, many=True).data)
