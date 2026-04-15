@@ -4,7 +4,7 @@ from typing import Any
 
 from django.db import transaction
 
-from apps.homes.models import Chore, Home, HomeChore, HomeImage, HomeMember, Reward, StarterPack
+from apps.homes.models import Chore, Home, HomeChore, HomeMember, Reward, StarterPack
 from apps.users.models import User
 
 
@@ -67,27 +67,21 @@ def create_home(*, user: User, name: str, image_id: int) -> Home:
     Args:
         user: 집을 생성하는 User 인스턴스.
         name: 집 이름.
-        image_id: 선택된 HomeImage PK.
+        image_id: 선택된 집 이미지 enum 값.
 
     Returns:
         생성된 Home 인스턴스.
 
     Raises:
         AlreadyHasHomeError: 이미 집이 있는 경우.
-        HomeError: 이미지가 존재하지 않는 경우.
     """
     if HomeMember.objects.filter(user=user).exists():
         raise AlreadyHasHomeError("이미 속한 집이 있습니다.")
 
-    try:
-        image = HomeImage.objects.get(pk=image_id)
-    except HomeImage.DoesNotExist:
-        raise HomeError("존재하지 않는 이미지입니다.")
-
     with transaction.atomic():
         home = Home.objects.create(
             name=name,
-            image=image,
+            image=image_id,
             invite_code=_generate_invite_code(),
         )
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)

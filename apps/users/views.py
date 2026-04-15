@@ -10,7 +10,6 @@ from apps.users import selectors, services
 from apps.users.serializers import (
     AppleLoginSerializer,
     KakaoLoginSerializer,
-    ProfileImageSerializer,
     TokenOutputSerializer,
     UserProfileOutputSerializer,
     UserProfileUpdateSerializer,
@@ -77,7 +76,7 @@ class UserMeView(APIView):
     )
     def get(self, request: Request) -> Response:
         """현재 로그인한 유저의 프로필을 반환합니다."""
-        return Response(UserProfileOutputSerializer(request.user, context={"request": request}).data)
+        return Response(UserProfileOutputSerializer(request.user).data)
 
     @extend_schema(
         tags=["Users"],
@@ -98,7 +97,7 @@ class UserMeView(APIView):
         except services.ProfileUpdateError as e:
             raise ValidationError({"duplicate_nickname": str(e)}) from e
 
-        return Response(UserProfileOutputSerializer(user, context={"request": request}).data)
+        return Response(UserProfileOutputSerializer(user).data)
 
 
 class ProfileImageListView(APIView):
@@ -107,9 +106,8 @@ class ProfileImageListView(APIView):
     @extend_schema(
         tags=["Users"],
         summary="프리셋 프로필 이미지 목록 조회",
-        responses={200: ProfileImageSerializer(many=True)},
+        responses={200: UserProfileOutputSerializer},
     )
     def get(self, request: Request) -> Response:
-        """사용 가능한 프리셋 프로필 이미지 목록을 반환합니다."""
-        images = selectors.get_profile_images()
-        return Response(ProfileImageSerializer(images, many=True, context={"request": request}).data)
+        """선택 가능한 프로필 이미지 enum 목록을 반환합니다."""
+        return Response(selectors.get_profile_image_choices())

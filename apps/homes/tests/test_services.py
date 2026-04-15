@@ -1,9 +1,8 @@
 import pytest
 
-from apps.homes.models import Home, HomeMember, Reward
+from apps.homes.models import Home, HomeMember, HomeImageType, Reward
 from apps.homes.services import (
     AlreadyHasHomeError,
-    HomeError,
     HomeNotFoundError,
     HomePermissionError,
     add_rewards,
@@ -14,7 +13,6 @@ from apps.homes.services import (
 from apps.homes.tests.factories import (
     ChoreFactory,
     HomeFactory,
-    HomeImageFactory,
     HomeMemberFactory,
     StarterPackFactory,
 )
@@ -26,20 +24,19 @@ pytestmark = pytest.mark.django_db
 class TestCreateHome:
     def test_집_생성_성공(self):
         user = UserFactory()
-        image = HomeImageFactory()
 
-        home = create_home(user=user, name="우리집", image_id=image.pk)
+        home = create_home(user=user, name="우리집", image_id=HomeImageType.TYPE_1)
 
         assert home.name == "우리집"
+        assert home.image == HomeImageType.TYPE_1
         assert home.status == Home.Status.DRAFT
         assert home.creation_step == Home.CreationStep.PROFILE
         assert len(home.invite_code) == 6
 
     def test_관리자_멤버_자동_생성(self):
         user = UserFactory()
-        image = HomeImageFactory()
 
-        home = create_home(user=user, name="우리집", image_id=image.pk)
+        home = create_home(user=user, name="우리집", image_id=HomeImageType.TYPE_1)
 
         member = HomeMember.objects.get(home=home, user=user)
         assert member.role == HomeMember.Role.ADMIN
@@ -48,16 +45,9 @@ class TestCreateHome:
         user = UserFactory()
         existing_home = HomeFactory()
         HomeMemberFactory(home=existing_home, user=user)
-        image = HomeImageFactory()
 
         with pytest.raises(AlreadyHasHomeError):
-            create_home(user=user, name="새집", image_id=image.pk)
-
-    def test_존재하지_않는_이미지_실패(self):
-        user = UserFactory()
-
-        with pytest.raises(HomeError):
-            create_home(user=user, name="우리집", image_id=9999)
+            create_home(user=user, name="새집", image_id=HomeImageType.TYPE_1)
 
 
 class TestAddStarterPackChores:

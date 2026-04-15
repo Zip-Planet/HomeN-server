@@ -3,10 +3,10 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.homes.models import Home, HomeMember
+from apps.homes.models import HomeImageType
 from apps.homes.tests.factories import (
     ChoreFactory,
     HomeFactory,
-    HomeImageFactory,
     HomeMemberFactory,
     StarterPackFactory,
 )
@@ -26,10 +26,9 @@ def auth_client(user) -> APIClient:
 class TestHomeCreateView:
     def test_집_생성_성공(self):
         user = UserFactory()
-        image = HomeImageFactory()
         client = auth_client(user)
 
-        res = client.post("/api/v1/homes/", {"name": "우리집", "image_id": image.pk})
+        res = client.post("/api/v1/homes/", {"name": "우리집", "image_id": HomeImageType.TYPE_1})
 
         assert res.status_code == 201
         assert res.data["name"] == "우리집"
@@ -38,10 +37,9 @@ class TestHomeCreateView:
 
     def test_특수문자_이름_실패(self):
         user = UserFactory()
-        image = HomeImageFactory()
         client = auth_client(user)
 
-        res = client.post("/api/v1/homes/", {"name": "우리집!", "image_id": image.pk})
+        res = client.post("/api/v1/homes/", {"name": "우리집!", "image_id": HomeImageType.TYPE_1})
 
         assert res.status_code == 400
 
@@ -49,10 +47,17 @@ class TestHomeCreateView:
         user = UserFactory()
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user)
-        image = HomeImageFactory()
         client = auth_client(user)
 
-        res = client.post("/api/v1/homes/", {"name": "새집", "image_id": image.pk})
+        res = client.post("/api/v1/homes/", {"name": "새집", "image_id": HomeImageType.TYPE_1})
+
+        assert res.status_code == 400
+
+    def test_잘못된_이미지_id_실패(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.post("/api/v1/homes/", {"name": "우리집", "image_id": 9999})
 
         assert res.status_code == 400
 
@@ -135,7 +140,7 @@ class TestHomeInviteView:
 
     def test_draft_집은_404(self):
         user = UserFactory()
-        home = HomeFactory(status=Home.Status.DRAFT, invite_code="DRF999")
+        HomeFactory(status=Home.Status.DRAFT, invite_code="DRF999")
         client = auth_client(user)
 
         res = client.get("/api/v1/homes/invite/DRF999/")
