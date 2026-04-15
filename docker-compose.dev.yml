@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    network_mode: host   # EC2 host 네트워크 직접 사용 → localhost = EC2 PostgreSQL
+    env_file:
+      - .env
+    restart: unless-stopped
