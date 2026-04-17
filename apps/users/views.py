@@ -10,6 +10,7 @@ from apps.users import selectors, services
 from apps.users.serializers import (
     AppleLoginSerializer,
     KakaoLoginSerializer,
+    ProfileImageIdSerializer,
     TokenOutputSerializer,
     UserProfileOutputSerializer,
     UserProfileUpdateSerializer,
@@ -106,7 +107,7 @@ class ProfileImageListView(APIView):
     @extend_schema(
         tags=["Users"],
         summary="프리셋 프로필 이미지 목록 조회",
-        responses={200: UserProfileOutputSerializer},
+        responses={200: ProfileImageIdSerializer(many=True)},
     )
     def get(self, request: Request) -> Response:
         """선택 가능한 프로필 이미지 enum 목록을 반환합니다."""
