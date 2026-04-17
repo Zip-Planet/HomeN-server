@@ -123,6 +123,14 @@ class TestJoinHome:
         assert member.role == HomeMember.Role.MEMBER
         assert member.home == home
 
+    def test_소문자_초대코드로_참여_성공(self):
+        user = UserFactory()
+        home = HomeFactory(status=Home.Status.ACTIVE, invite_code="ABC123")
+
+        member = join_home(user=user, invite_code="abc123")
+
+        assert member.home == home
+
     def test_이미_집이_있으면_실패(self):
         user = UserFactory()
         existing_home = HomeFactory(status=Home.Status.ACTIVE)

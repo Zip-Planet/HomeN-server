@@ -138,6 +138,17 @@ class TestHomeInviteView:
         assert res.data["invite_code"] == "ABC123"
         assert res.data["member_count"] == 1
 
+    def test_소문자_초대코드로_조회_성공(self):
+        user = UserFactory()
+        home = HomeFactory(status=Home.Status.ACTIVE, invite_code="ABC123")
+        HomeMemberFactory(home=home, user=UserFactory(), role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.get("/api/v1/homes/invite/abc123/")
+
+        assert res.status_code == 200
+        assert res.data["invite_code"] == "ABC123"
+
     def test_draft_집은_404(self):
         user = UserFactory()
         HomeFactory(status=Home.Status.DRAFT, invite_code="DRF999")
@@ -155,6 +166,16 @@ class TestHomeJoinView:
         client = auth_client(user)
 
         res = client.post("/api/v1/homes/join/", {"invite_code": home.invite_code})
+
+        assert res.status_code == 200
+        assert HomeMember.objects.filter(user=user, home=home).exists()
+
+    def test_소문자_초대코드로_참여_성공(self):
+        user = UserFactory()
+        home = HomeFactory(status=Home.Status.ACTIVE, invite_code="ABC123")
+        client = auth_client(user)
+
+        res = client.post("/api/v1/homes/join/", {"invite_code": "abc123"})
 
         assert res.status_code == 200
         assert HomeMember.objects.filter(user=user, home=home).exists()
