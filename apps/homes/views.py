@@ -10,7 +10,9 @@ from apps.homes.serializers import (
     ChoreOutputSerializer,
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
+    HomeJoinSerializer,
     HomeOutputSerializer,
+    ImageIdSerializer,
     StarterPackSerializer,
 )
 
@@ -19,7 +21,7 @@ class HomeImageListView(APIView):
     @extend_schema(
         tags=["Homes"],
         summary="프리셋 집 이미지 목록 조회",
-        responses={200: HomeOutputSerializer},
+        responses={200: ImageIdSerializer(many=True)},
     )
     def get(self, request: Request) -> Response:
         """선택 가능한 집 이미지 enum 목록을 반환합니다."""
@@ -95,7 +97,7 @@ class HomeJoinView(APIView):
     @extend_schema(
         tags=["Homes"],
         summary="초대코드로 집 참여",
-        request=None,
+        request=HomeJoinSerializer,
         responses={
             200: HomeOutputSerializer,
             400: OpenApiResponse(description="이미 집이 있음"),

@@ -87,6 +87,18 @@ class HomeMemberSerializer(serializers.ModelSerializer):
         return obj.get_role_display()
 
 
+class ImageIdSerializer(serializers.Serializer):
+    """이미지 enum ID 목록 응답 시리얼라이저."""
+
+    id = serializers.IntegerField()
+
+
+class HomeJoinSerializer(serializers.Serializer):
+    """집 참여 요청 시리얼라이저."""
+
+    invite_code = serializers.CharField(max_length=6)
+
+
 class HomeInviteDetailSerializer(serializers.ModelSerializer):
     """초대코드 조회 출력 시리얼라이저."""
 
