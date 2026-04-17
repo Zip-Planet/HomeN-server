@@ -52,8 +52,6 @@ class HomeCreateView(APIView):
             )
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
-        except services.HomeError as e:
-            raise ValidationError({"invalid_chore": str(e)}) from e
 
         return Response(HomeOutputSerializer(home).data, status=status.HTTP_201_CREATED)
 

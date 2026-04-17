@@ -2,7 +2,7 @@ import factory
 
 from apps.homes.models import (
     Chore,
-    ChoreImageType,
+    ChoreCategory,
     Home,
     HomeChore,
     HomeImageType,
@@ -42,10 +42,11 @@ class StarterPackFactory(factory.django.DjangoModelFactory):
 
 class ChoreFactory(factory.django.DjangoModelFactory):
     starter_pack = factory.SubFactory(StarterPackFactory)
+    category = ChoreCategory.TRASH
     name = factory.Sequence(lambda n: f"집안일{n}")
-    image = ChoreImageType.TYPE_1
+    description = ""
     repeat_days = [0, 2, 4]
-    difficulty = Chore.Difficulty.EASY
+    difficulty = Chore.Difficulty.LOW
 
     class Meta:
         model = Chore

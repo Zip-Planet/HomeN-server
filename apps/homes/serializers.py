@@ -2,11 +2,21 @@ import re
 
 from rest_framework import serializers
 
-from apps.homes.models import Chore, Home, HomeMember, HomeImageType, Reward, StarterPack
+from apps.homes.models import Chore, ChoreCategory, Home, HomeMember, HomeImageType, Reward, StarterPack
 
 
 class HomeCreateSerializer(serializers.Serializer):
     """집 생성 입력 시리얼라이저."""
+
+    class ChoreInputSerializer(serializers.Serializer):
+        category = serializers.ChoiceField(choices=ChoreCategory.choices)
+        name = serializers.CharField(max_length=20)
+        description = serializers.CharField(max_length=50, default="", allow_blank=True)
+        repeat_days = serializers.ListField(
+            child=serializers.ChoiceField(choices=Chore.Weekday.choices),
+            default=list,
+        )
+        difficulty = serializers.ChoiceField(choices=Chore.Difficulty.choices)
 
     class RewardInputSerializer(serializers.Serializer):
         name = serializers.CharField(max_length=50)
@@ -14,7 +24,7 @@ class HomeCreateSerializer(serializers.Serializer):
 
     name = serializers.CharField(max_length=10)
     image_id = serializers.ChoiceField(choices=HomeImageType.choices)
-    chores = serializers.ListField(child=serializers.IntegerField(), default=list)
+    chores = ChoreInputSerializer(many=True, default=list)
     rewards = RewardInputSerializer(many=True, default=list)
 
     def validate_name(self, value: str) -> str:
@@ -45,15 +55,12 @@ class StarterPackSerializer(serializers.ModelSerializer):
 class ChoreOutputSerializer(serializers.ModelSerializer):
     """집안일 출력 시리얼라이저."""
 
-    difficulty_label = serializers.SerializerMethodField()
+    difficulty_label = serializers.CharField(source="get_difficulty_display", read_only=True)
+    category_label = serializers.CharField(source="get_category_display", read_only=True)
 
     class Meta:
         model = Chore
-        fields = ["id", "name", "image", "repeat_days", "difficulty", "difficulty_label"]
-
-    def get_difficulty_label(self, obj: Chore) -> str:
-        """난이도 화면 표시용 레이블을 반환합니다."""
-        return obj.get_difficulty_label()
+        fields = ["id", "category", "category_label", "name", "description", "repeat_days", "difficulty", "difficulty_label"]
 
 
 class RewardOutputSerializer(serializers.ModelSerializer):

@@ -1,14 +1,13 @@
 import pytest
 
-from apps.homes.models import Home, HomeChore, HomeMember, HomeImageType, Reward
+from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward
 from apps.homes.services import (
     AlreadyHasHomeError,
-    HomeError,
     HomeNotFoundError,
     create_home,
     join_home,
 )
-from apps.homes.tests.factories import ChoreFactory, HomeFactory, HomeMemberFactory
+from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -35,15 +34,18 @@ class TestCreateHome:
 
     def test_집안일_함께_생성(self):
         user = UserFactory()
-        chore1 = ChoreFactory()
-        chore2 = ChoreFactory()
+        chores_data = [
+            {"category": ChoreCategory.DISHES, "name": "설거지", "description": "그릇 닦기", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
+            {"category": ChoreCategory.VACUUM, "name": "청소기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+        ]
 
         home = create_home(
             user=user, name="우리집", image_id=HomeImageType.TYPE_1,
-            chores=[chore1.pk, chore2.pk], rewards=[],
+            chores=chores_data, rewards=[],
         )
 
         assert HomeChore.objects.filter(home=home).count() == 2
+        assert Chore.objects.filter(home_chores__home=home).count() == 2
 
     def test_빈_집안일_리스트_집안일_생성_안함(self):
         user = UserFactory()
@@ -78,11 +80,6 @@ class TestCreateHome:
         with pytest.raises(AlreadyHasHomeError):
             create_home(user=user, name="새집", image_id=HomeImageType.TYPE_1, chores=[], rewards=[])
 
-    def test_존재하지_않는_집안일_ID_실패(self):
-        user = UserFactory()
-
-        with pytest.raises(HomeError):
-            create_home(user=user, name="우리집", image_id=HomeImageType.TYPE_1, chores=[99999], rewards=[])
 
 
 class TestJoinHome:

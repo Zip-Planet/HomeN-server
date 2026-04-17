@@ -20,45 +20,29 @@ class HomeImageType(models.IntegerChoices):
     TYPE_8 = 8, "집 이미지 8"
 
 
-class ChoreImageType(models.IntegerChoices):
-    """집안일 이미지 enum.
+class ChoreCategory(models.IntegerChoices):
+    """집안일 카테고리 enum."""
 
-    프론트엔드에서 값을 받아 해당하는 이미지를 렌더링합니다.
-    """
-
-    TYPE_1 = 1, "집안일 이미지 1"
-    TYPE_2 = 2, "집안일 이미지 2"
-    TYPE_3 = 3, "집안일 이미지 3"
-    TYPE_4 = 4, "집안일 이미지 4"
-    TYPE_5 = 5, "집안일 이미지 5"
-    TYPE_6 = 6, "집안일 이미지 6"
-    TYPE_7 = 7, "집안일 이미지 7"
-    TYPE_8 = 8, "집안일 이미지 8"
-    TYPE_9 = 9, "집안일 이미지 9"
-    TYPE_10 = 10, "집안일 이미지 10"
-    TYPE_11 = 11, "집안일 이미지 11"
-    TYPE_12 = 12, "집안일 이미지 12"
-    TYPE_13 = 13, "집안일 이미지 13"
-    TYPE_14 = 14, "집안일 이미지 14"
-    TYPE_15 = 15, "집안일 이미지 15"
-    TYPE_16 = 16, "집안일 이미지 16"
-    TYPE_17 = 17, "집안일 이미지 17"
-    TYPE_18 = 18, "집안일 이미지 18"
-    TYPE_19 = 19, "집안일 이미지 19"
-    TYPE_20 = 20, "집안일 이미지 20"
+    TRASH = 1, "쓰레기"
+    BATHROOM = 2, "욕실"
+    KITCHEN = 3, "주방"
+    LIVING_ROOM = 4, "거실"
+    BEDROOM = 5, "침실"
+    LAUNDRY = 6, "빨래"
+    COOKING = 7, "요리"
+    DISHES = 8, "설거지"
+    VACUUM = 9, "청소기"
+    ETC = 10, "기타"
 
 
 class Home(models.Model):
     """집 모델.
 
-    집 생성은 3단계로 진행됩니다. creation_step으로 중간 이탈 시 재진입 단계를 파악합니다.
-
     Attributes:
         name: 집 이름 (한글·영문·숫자·공백, 최대 10자).
         image: 선택된 집 이미지 enum 값.
         invite_code: 6자리 초대코드 (대문자+숫자).
-        creation_step: 마지막 완료 단계 (1=집 프로필, 2=집안일, 3=리워드).
-        status: 생성 상태 (draft=생성 중, active=활성).
+        status: 생성 상태 (active=활성).
         created_at: 생성 일시.
         updated_at: 최종 수정 일시.
     """
@@ -132,24 +116,25 @@ class StarterPack(models.Model):
 
 
 class Chore(models.Model):
-    """집안일 마스터 모델.
+    """집안일 모델.
 
-    starter_pack이 null이면 추후 구현될 커스텀 집안일입니다.
+    starter_pack이 null이면 집 생성 시 직접 등록한 커스텀 집안일입니다.
 
     Attributes:
         starter_pack: 소속 스타터팩 (null=커스텀).
-        name: 집안일 이름.
-        image: 집안일 이미지 enum 값.
+        category: 집안일 카테고리 enum 값.
+        name: 집안일 제목 (최대 20자).
+        description: 집안일 설명 (최대 50자).
         repeat_days: 반복 요일 목록 (Weekday enum 정수 배열).
         difficulty: 난이도 (1=하, 2=중하, 3=중, 4=중상, 5=상).
     """
 
     class Difficulty(models.IntegerChoices):
-        VERY_EASY = 1, "하"
-        EASY = 2, "중하"
+        LOW = 1, "하"
+        MEDIUM_LOW = 2, "중하"
         MEDIUM = 3, "중"
-        HARD = 4, "중상"
-        VERY_HARD = 5, "상"
+        MEDIUM_HIGH = 4, "중상"
+        HIGH = 5, "상"
 
     class Weekday(models.IntegerChoices):
         MON = 0, "월"
@@ -167,8 +152,9 @@ class Chore(models.Model):
         blank=True,
         related_name="chores",
     )
-    name = models.CharField(max_length=50)
-    image = models.IntegerField(choices=ChoreImageType.choices)
+    category = models.IntegerField(choices=ChoreCategory.choices)
+    name = models.CharField(max_length=20)
+    description = models.CharField(max_length=50, blank=True, default="")
     repeat_days = ArrayField(models.IntegerField(choices=Weekday.choices), default=list)
     difficulty = models.IntegerField(choices=Difficulty.choices)
 
@@ -177,18 +163,6 @@ class Chore(models.Model):
 
     def __str__(self) -> str:
         return f"chore:{self.pk}:{self.name}"
-
-    def get_difficulty_label(self) -> str:
-        """난이도를 화면 표시용 레이블로 변환합니다.
-
-        Returns:
-            difficulty ≤ 2 → "쉬움", 3 ≤ difficulty ≤ 4 → "중간", 5 → "어려움".
-        """
-        if self.difficulty <= 2:
-            return "쉬움"
-        if self.difficulty <= 4:
-            return "중간"
-        return "어려움"
 
 
 class HomeChore(models.Model):
