@@ -30,6 +30,12 @@ class UserProfileOutputSerializer(serializers.Serializer):
     has_home = serializers.BooleanField()
 
 
+class ProfileImageIdSerializer(serializers.Serializer):
+    """프로필 이미지 enum ID 목록 응답 시리얼라이저."""
+
+    id = serializers.IntegerField()
+
+
 class UserProfileUpdateSerializer(serializers.Serializer):
     """유저 프로필 업데이트 요청 시리얼라이저."""
 
