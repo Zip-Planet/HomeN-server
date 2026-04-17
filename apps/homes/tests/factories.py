@@ -17,8 +17,7 @@ class HomeFactory(factory.django.DjangoModelFactory):
     name = factory.Sequence(lambda n: f"집{n}")
     image = HomeImageType.TYPE_1
     invite_code = factory.Sequence(lambda n: f"H{n:05d}")
-    creation_step = Home.CreationStep.PROFILE
-    status = Home.Status.DRAFT
+    status = Home.Status.ACTIVE
 
     class Meta:
         model = Home

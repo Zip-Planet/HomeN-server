@@ -1,13 +1,11 @@
 from django.urls import path
 
 from apps.homes.views import (
-    HomeChoreView,
     HomeCreateView,
     HomeDetailView,
     HomeImageListView,
     HomeInviteView,
     HomeJoinView,
-    HomeRewardView,
     StarterPackChoreListView,
     StarterPackListView,
 )
@@ -18,8 +16,6 @@ home_urlpatterns = [
     path("mine/", HomeDetailView.as_view()),
     path("invite/<str:code>/", HomeInviteView.as_view()),
     path("join/", HomeJoinView.as_view()),
-    path("<int:home_id>/chores/", HomeChoreView.as_view()),
-    path("<int:home_id>/rewards/", HomeRewardView.as_view()),
 ]
 
 starter_pack_urlpatterns = [

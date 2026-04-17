@@ -63,11 +63,6 @@ class Home(models.Model):
         updated_at: 최종 수정 일시.
     """
 
-    class CreationStep(models.IntegerChoices):
-        PROFILE = 1, "집 프로필"
-        CHORES = 2, "집안일"
-        REWARDS = 3, "리워드"
-
     class Status(models.TextChoices):
         DRAFT = "draft", "생성 중"
         ACTIVE = "active", "활성"
@@ -75,8 +70,7 @@ class Home(models.Model):
     name = models.CharField(max_length=10)
     image = models.IntegerField(choices=HomeImageType.choices)
     invite_code = models.CharField(max_length=6, unique=True)
-    creation_step = models.IntegerField(choices=CreationStep.choices, default=CreationStep.PROFILE)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

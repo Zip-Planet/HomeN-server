@@ -6,10 +6,16 @@ from apps.homes.models import Chore, Home, HomeMember, HomeImageType, Reward, St
 
 
 class HomeCreateSerializer(serializers.Serializer):
-    """집 생성 입력 시리얼라이저 (1단계)."""
+    """집 생성 입력 시리얼라이저."""
+
+    class RewardInputSerializer(serializers.Serializer):
+        name = serializers.CharField(max_length=50)
+        goal_point = serializers.IntegerField(min_value=1)
 
     name = serializers.CharField(max_length=10)
     image_id = serializers.ChoiceField(choices=HomeImageType.choices)
+    chores = serializers.ListField(child=serializers.IntegerField(), default=list)
+    rewards = RewardInputSerializer(many=True, default=list)
 
     def validate_name(self, value: str) -> str:
         """집 이름 규칙: 한글·영문·숫자·공백만 허용, 공백 단독 불가."""
@@ -25,7 +31,7 @@ class HomeOutputSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Home
-        fields = ["id", "name", "image", "invite_code", "creation_step", "status", "created_at"]
+        fields = ["id", "name", "image", "invite_code", "status", "created_at"]
 
 
 class StarterPackSerializer(serializers.ModelSerializer):
@@ -48,19 +54,6 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
     def get_difficulty_label(self, obj: Chore) -> str:
         """난이도 화면 표시용 레이블을 반환합니다."""
         return obj.get_difficulty_label()
-
-
-class HomeChoreCreateSerializer(serializers.Serializer):
-    """집안일 추가 입력 시리얼라이저 (2단계)."""
-
-    starter_pack_id = serializers.IntegerField()
-
-
-class RewardCreateSerializer(serializers.Serializer):
-    """리워드 생성 입력 시리얼라이저 (3단계, 배열로 사용)."""
-
-    name = serializers.CharField(max_length=50)
-    goal_point = serializers.IntegerField(min_value=1)
 
 
 class RewardOutputSerializer(serializers.ModelSerializer):
