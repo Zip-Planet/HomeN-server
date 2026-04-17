@@ -1,6 +1,6 @@
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -8,12 +8,9 @@ from rest_framework.views import APIView
 from apps.homes import selectors, services
 from apps.homes.serializers import (
     ChoreOutputSerializer,
-    HomeChoreCreateSerializer,
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
     HomeOutputSerializer,
-    RewardCreateSerializer,
-    RewardOutputSerializer,
     StarterPackSerializer,
 )
 
@@ -32,27 +29,33 @@ class HomeImageListView(APIView):
 class HomeCreateView(APIView):
     @extend_schema(
         tags=["Homes"],
-        summary="집 생성 (1단계)",
+        summary="집 생성",
         request=HomeCreateSerializer,
         responses={
             201: HomeOutputSerializer,
-            400: OpenApiResponse(description="이미 집이 있거나 잘못된 이미지 ID"),
+            400: OpenApiResponse(description="이미 집이 있거나 유효성 검사 실패"),
         },
     )
     def post(self, request: Request) -> Response:
-        """새 집을 생성합니다 (1단계)."""
+        """집을 생성합니다. 집안일·리워드를 함께 등록하며 빈 리스트는 생성하지 않습니다."""
         serializer = HomeCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        data = serializer.validated_data
         try:
-            home = services.create_home(user=request.user, **serializer.validated_data)
+            home = services.create_home(
+                user=request.user,
+                name=data["name"],
+                image_id=data["image_id"],
+                chores=data["chores"],
+                rewards=data["rewards"],
+            )
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
+        except services.HomeError as e:
+            raise ValidationError({"invalid_chore": str(e)}) from e
 
-        return Response(
-            HomeOutputSerializer(home).data,
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(HomeOutputSerializer(home).data, status=status.HTTP_201_CREATED)
 
 
 class HomeDetailView(APIView):
@@ -70,77 +73,6 @@ class HomeDetailView(APIView):
         if home is None:
             raise NotFound("속한 집이 없습니다.")
         return Response(HomeOutputSerializer(home).data)
-
-
-class HomeChoreView(APIView):
-    @extend_schema(
-        tags=["Homes"],
-        summary="스타터팩 집안일 추가 (2단계)",
-        parameters=[OpenApiParameter("home_id", int, OpenApiParameter.PATH, description="집 ID")],
-        request=HomeChoreCreateSerializer,
-        responses={
-            201: ChoreOutputSerializer(many=True),
-            400: OpenApiResponse(description="잘못된 스타터팩 ID"),
-            403: OpenApiResponse(description="권한 없음"),
-            404: OpenApiResponse(description="집을 찾을 수 없음"),
-        },
-    )
-    def post(self, request: Request, home_id: int) -> Response:
-        """스타터팩의 집안일을 집에 추가합니다 (2단계)."""
-        home = selectors.get_user_home(request.user)
-        if home is None or home.pk != home_id:
-            raise NotFound("집을 찾을 수 없습니다.")
-
-        serializer = HomeChoreCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        try:
-            chores = services.add_starter_pack_chores(
-                home=home, user=request.user, **serializer.validated_data
-            )
-        except services.HomePermissionError as e:
-            raise PermissionDenied(str(e)) from e
-        except services.HomeError as e:
-            raise ValidationError({"invalid_starter_pack": str(e)}) from e
-
-        return Response(
-            ChoreOutputSerializer(chores, many=True).data,
-            status=status.HTTP_201_CREATED,
-        )
-
-
-class HomeRewardView(APIView):
-    @extend_schema(
-        tags=["Homes"],
-        summary="리워드 등록 및 집 생성 완료 (3단계)",
-        parameters=[OpenApiParameter("home_id", int, OpenApiParameter.PATH, description="집 ID")],
-        request=RewardCreateSerializer(many=True),
-        responses={
-            201: RewardOutputSerializer(many=True),
-            403: OpenApiResponse(description="권한 없음"),
-            404: OpenApiResponse(description="집을 찾을 수 없음"),
-        },
-    )
-    def post(self, request: Request, home_id: int) -> Response:
-        """리워드를 일괄 등록하고 집 생성을 완료합니다 (3단계)."""
-        home = selectors.get_user_home(request.user)
-        if home is None or home.pk != home_id:
-            raise NotFound("집을 찾을 수 없습니다.")
-
-        serializer = RewardCreateSerializer(data=request.data, many=True)
-        serializer.is_valid(raise_exception=True)
-
-        try:
-            rewards = services.add_rewards(
-                home=home, user=request.user, rewards_data=serializer.validated_data
-            )
-        except services.HomePermissionError as e:
-            raise PermissionDenied(str(e)) from e
-
-        return Response(
-            RewardOutputSerializer(rewards, many=True).data,
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class HomeInviteView(APIView):

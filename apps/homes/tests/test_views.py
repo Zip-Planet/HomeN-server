@@ -2,14 +2,8 @@ import pytest
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.homes.models import Home, HomeMember
-from apps.homes.models import HomeImageType
-from apps.homes.tests.factories import (
-    ChoreFactory,
-    HomeFactory,
-    HomeMemberFactory,
-    StarterPackFactory,
-)
+from apps.homes.models import Home, HomeMember, HomeImageType
+from apps.homes.tests.factories import ChoreFactory, HomeFactory, HomeMemberFactory
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -24,32 +18,48 @@ def auth_client(user) -> APIClient:
 
 
 class TestHomeCreateView:
-    def test_집_생성_성공(self):
+    url = "/api/v1/homes/"
+
+    def test_집안일_리워드_없이_생성_성공(self):
         user = UserFactory()
         client = auth_client(user)
+        payload = {"name": "우리집", "image_id": HomeImageType.TYPE_1, "chores": [], "rewards": []}
 
-        res = client.post("/api/v1/homes/", {"name": "우리집", "image_id": HomeImageType.TYPE_1})
+        res = client.post(self.url, payload, format="json")
 
         assert res.status_code == 201
         assert res.data["name"] == "우리집"
-        assert res.data["status"] == "draft"
-        assert res.data["creation_step"] == 1
+        assert res.data["status"] == Home.Status.ACTIVE
+        assert HomeMember.objects.filter(user=user, role=HomeMember.Role.ADMIN).exists()
+
+    def test_집안일_리워드_포함_생성_성공(self):
+        user = UserFactory()
+        chore1 = ChoreFactory()
+        chore2 = ChoreFactory()
+        client = auth_client(user)
+        payload = {
+            "name": "우리집",
+            "image_id": HomeImageType.TYPE_1,
+            "chores": [chore1.pk, chore2.pk],
+            "rewards": [{"name": "치킨", "goal_point": 100}],
+        }
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 201
+        home = Home.objects.get(pk=res.data["id"])
+        assert home.home_chores.count() == 2
+        assert home.rewards.count() == 1
 
     def test_특수문자_이름_실패(self):
         user = UserFactory()
         client = auth_client(user)
 
-        res = client.post("/api/v1/homes/", {"name": "우리집!", "image_id": HomeImageType.TYPE_1})
-
-        assert res.status_code == 400
-
-    def test_이미_집_있으면_실패(self):
-        user = UserFactory()
-        home = HomeFactory()
-        HomeMemberFactory(home=home, user=user)
-        client = auth_client(user)
-
-        res = client.post("/api/v1/homes/", {"name": "새집", "image_id": HomeImageType.TYPE_1})
+        res = client.post(
+            self.url,
+            {"name": "우리집!", "image_id": HomeImageType.TYPE_1, "chores": [], "rewards": []},
+            format="json",
+        )
 
         assert res.status_code == 400
 
@@ -57,7 +67,37 @@ class TestHomeCreateView:
         user = UserFactory()
         client = auth_client(user)
 
-        res = client.post("/api/v1/homes/", {"name": "우리집", "image_id": 9999})
+        res = client.post(
+            self.url,
+            {"name": "우리집", "image_id": 9999, "chores": [], "rewards": []},
+            format="json",
+        )
+
+        assert res.status_code == 400
+
+    def test_이미_집_있으면_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user)
+        client = auth_client(user)
+
+        res = client.post(
+            self.url,
+            {"name": "새집", "image_id": HomeImageType.TYPE_1, "chores": [], "rewards": []},
+            format="json",
+        )
+
+        assert res.status_code == 400
+
+    def test_존재하지_않는_집안일_ID_400(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.post(
+            self.url,
+            {"name": "우리집", "image_id": HomeImageType.TYPE_1, "chores": [99999], "rewards": []},
+            format="json",
+        )
 
         assert res.status_code == 400
 
@@ -73,6 +113,7 @@ class TestHomeDetailView:
 
         assert res.status_code == 200
         assert res.data["id"] == home.pk
+        assert "creation_step" not in res.data
 
     def test_집_없으면_404(self):
         user = UserFactory()
@@ -81,48 +122,6 @@ class TestHomeDetailView:
         res = client.get("/api/v1/homes/mine/")
 
         assert res.status_code == 404
-
-
-class TestHomeChoreView:
-    def test_집안일_추가_성공(self):
-        user = UserFactory()
-        home = HomeFactory()
-        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
-        pack = StarterPackFactory()
-        ChoreFactory(starter_pack=pack)
-        client = auth_client(user)
-
-        res = client.post(f"/api/v1/homes/{home.pk}/chores/", {"starter_pack_id": pack.pk})
-
-        assert res.status_code == 201
-        assert len(res.data) == 1
-
-    def test_구성원은_403(self):
-        user = UserFactory()
-        home = HomeFactory()
-        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
-        pack = StarterPackFactory()
-        client = auth_client(user)
-
-        res = client.post(f"/api/v1/homes/{home.pk}/chores/", {"starter_pack_id": pack.pk})
-
-        assert res.status_code == 403
-
-
-class TestHomeRewardView:
-    def test_리워드_일괄_등록_성공(self):
-        user = UserFactory()
-        home = HomeFactory()
-        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
-        client = auth_client(user)
-        payload = [{"name": "치킨", "goal_point": 100}, {"name": "영화", "goal_point": 200}]
-
-        res = client.post(f"/api/v1/homes/{home.pk}/rewards/", payload, format="json")
-
-        assert res.status_code == 201
-        assert len(res.data) == 2
-        home.refresh_from_db()
-        assert home.status == Home.Status.ACTIVE
 
 
 class TestHomeInviteView:
@@ -149,12 +148,11 @@ class TestHomeInviteView:
         assert res.status_code == 200
         assert res.data["invite_code"] == "ABC123"
 
-    def test_draft_집은_404(self):
+    def test_존재하지_않는_코드_404(self):
         user = UserFactory()
-        HomeFactory(status=Home.Status.DRAFT, invite_code="DRF999")
         client = auth_client(user)
 
-        res = client.get("/api/v1/homes/invite/DRF999/")
+        res = client.get("/api/v1/homes/invite/XXXXXX/")
 
         assert res.status_code == 404
 
