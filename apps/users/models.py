@@ -105,6 +105,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         """닉네임과 프로필 이미지가 모두 설정된 경우 True를 반환합니다."""
         return bool(self.name) and self.profile_image is not None
 
+    @property
+    def has_home(self) -> bool:
+        """집 관리자 또는 구성원에 속해있는 경우 True를 반환합니다."""
+        return self.home_memberships.exists()
+
 
 class SocialAccount(models.Model):
     """유저와 소셜 로그인 제공자를 연결하는 모델.

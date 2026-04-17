@@ -17,6 +17,7 @@ class TokenOutputSerializer(serializers.Serializer):
     access = serializers.CharField()
     refresh = serializers.CharField()
     is_profile_set = serializers.BooleanField()
+    has_home = serializers.BooleanField()
 
 
 class UserProfileOutputSerializer(serializers.Serializer):
@@ -26,6 +27,7 @@ class UserProfileOutputSerializer(serializers.Serializer):
     name = serializers.CharField()
     profile_image = serializers.IntegerField(allow_null=True)
     is_profile_set = serializers.BooleanField()
+    has_home = serializers.BooleanField()
 
 
 class UserProfileUpdateSerializer(serializers.Serializer):
