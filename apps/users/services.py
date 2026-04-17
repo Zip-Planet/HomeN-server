@@ -131,7 +131,7 @@ def kakao_login(*, code: str) -> dict[str, str]:
     provider_id = str(user_info["id"])
 
     user = _get_or_create_social_user(provider=SocialAccount.KAKAO, provider_id=provider_id)
-    return {**_issue_tokens(user), "is_profile_set": user.is_profile_set}
+    return {**_issue_tokens(user), "is_profile_set": user.is_profile_set, "has_home": user.has_home}
 
 
 # ──────────────────────────────────────────
@@ -227,7 +227,7 @@ def apple_login(*, code: str) -> dict[str, str]:
     provider_id = user_info["sub"]
 
     user = _get_or_create_social_user(provider=SocialAccount.APPLE, provider_id=provider_id)
-    return {**_issue_tokens(user), "is_profile_set": user.is_profile_set}
+    return {**_issue_tokens(user), "is_profile_set": user.is_profile_set, "has_home": user.has_home}
 
 
 def update_profile(*, user: User, name: str, profile_image: int) -> User:

@@ -4,11 +4,13 @@ import pytest
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from apps.homes.models import HomeMember
+from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
 from apps.users.models import UserProfileImage
 from apps.users.services import ProfileUpdateError, SocialLoginError
 from apps.users.tests.factories import UserFactory
 
-FAKE_TOKENS = {"access": "fake-access-token", "refresh": "fake-refresh-token", "is_profile_set": False}
+FAKE_TOKENS = {"access": "fake-access-token", "refresh": "fake-refresh-token", "is_profile_set": False, "has_home": False}
 
 
 @pytest.fixture
@@ -44,6 +46,7 @@ class TestKakaoLoginView:
         assert response.data["access"] == FAKE_TOKENS["access"]
         assert response.data["refresh"] == FAKE_TOKENS["refresh"]
         assert "is_profile_set" in response.data
+        assert "has_home" in response.data
         mock_login.assert_called_once_with(code="valid-code")
 
     @patch("apps.users.services.kakao_login")
@@ -73,6 +76,7 @@ class TestAppleLoginView:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["access"] == FAKE_TOKENS["access"]
+        assert "has_home" in response.data
         mock_login.assert_called_once_with(code="valid-code")
 
     @patch("apps.users.services.apple_login")
@@ -102,6 +106,27 @@ class TestUserMeView:
         assert "name" in response.data
         assert "profile_image" in response.data
         assert "is_profile_set" in response.data
+        assert "has_home" in response.data
+
+    def test_집_없는_유저_has_home_false(self, api_client):
+        user = UserFactory()
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(self.url)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["has_home"] is False
+
+    def test_집_있는_유저_has_home_true(self, api_client):
+        user = UserFactory()
+        home = HomeFactory(status="active")
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        api_client.force_authenticate(user=user)
+
+        response = api_client.get(self.url)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["has_home"] is True
 
     def test_get_profile_unauthenticated_returns_401(self, api_client):
         response = api_client.get(self.url)
