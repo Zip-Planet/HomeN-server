@@ -2,8 +2,8 @@ import pytest
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.homes.models import Home, HomeMember, HomeImageType
-from apps.homes.tests.factories import ChoreFactory, HomeFactory, HomeMemberFactory
+from apps.homes.models import Chore, ChoreCategory, Home, HomeMember, HomeImageType
+from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -34,13 +34,14 @@ class TestHomeCreateView:
 
     def test_집안일_리워드_포함_생성_성공(self):
         user = UserFactory()
-        chore1 = ChoreFactory()
-        chore2 = ChoreFactory()
         client = auth_client(user)
         payload = {
             "name": "우리집",
             "image_id": HomeImageType.TYPE_1,
-            "chores": [chore1.pk, chore2.pk],
+            "chores": [
+                {"category": ChoreCategory.DISHES, "name": "설거지", "description": "그릇 닦기", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
+                {"category": ChoreCategory.VACUUM, "name": "청소기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+            ],
             "rewards": [{"name": "치킨", "goal_point": 100}],
         }
 
@@ -89,13 +90,18 @@ class TestHomeCreateView:
 
         assert res.status_code == 400
 
-    def test_존재하지_않는_집안일_ID_400(self):
+    def test_잘못된_집안일_이미지_400(self):
         user = UserFactory()
         client = auth_client(user)
 
         res = client.post(
             self.url,
-            {"name": "우리집", "image_id": HomeImageType.TYPE_1, "chores": [99999], "rewards": []},
+            {
+                "name": "우리집",
+                "image_id": HomeImageType.TYPE_1,
+                "chores": [{"category": 9999, "name": "설거지", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}],
+                "rewards": [],
+            },
             format="json",
         )
 
