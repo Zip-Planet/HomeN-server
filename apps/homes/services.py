@@ -48,19 +48,20 @@ def create_home(
     user: User,
     name: str,
     image_id: int,
-    chores: list[int],
+    chores: list[dict[str, Any]],
     rewards: list[dict[str, Any]],
 ) -> Home:
     """집을 생성하고 요청 유저를 관리자로 등록합니다.
 
-    집안일 ID 목록과 리워드 목록을 함께 받아 하나의 트랜잭션으로 처리합니다.
+    집안일 목록과 리워드 목록을 함께 받아 하나의 트랜잭션으로 처리합니다.
     빈 리스트를 전달하면 해당 항목은 생성하지 않습니다.
 
     Args:
         user: 집을 생성하는 User 인스턴스.
         name: 집 이름.
         image_id: 선택된 집 이미지 enum 값.
-        chores: 추가할 Chore PK 목록. 빈 리스트면 집안일을 생성하지 않습니다.
+        chores: [{"name": ..., "image": ..., "points": ..., "repeat_days": ..., "difficulty": ...}, ...]
+            형식의 집안일 목록. 빈 리스트면 생성하지 않습니다.
         rewards: [{"name": ..., "goal_point": ...}, ...] 형식의 리워드 목록. 빈 리스트면 생성하지 않습니다.
 
     Returns:
@@ -68,7 +69,6 @@ def create_home(
 
     Raises:
         AlreadyHasHomeError: 이미 집이 있는 경우.
-        HomeError: 존재하지 않는 집안일 ID가 포함된 경우.
     """
     if HomeMember.objects.filter(user=user).exists():
         raise AlreadyHasHomeError("이미 속한 집이 있습니다.")
@@ -83,10 +83,16 @@ def create_home(
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)
 
         if chores:
-            chore_ids = list(dict.fromkeys(chores))  # 순서 유지 중복 제거
-            chore_objs = list(Chore.objects.filter(pk__in=chore_ids))
-            if len(chore_objs) != len(chore_ids):
-                raise HomeError("존재하지 않는 집안일이 포함되어 있습니다.")
+            chore_objs = Chore.objects.bulk_create([
+                Chore(
+                    category=c["category"],
+                    name=c["name"],
+                    description=c.get("description", ""),
+                    repeat_days=c["repeat_days"],
+                    difficulty=c["difficulty"],
+                )
+                for c in chores
+            ])
             HomeChore.objects.bulk_create([HomeChore(home=home, chore=c) for c in chore_objs])
 
         if rewards:
