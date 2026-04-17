@@ -174,7 +174,7 @@ def join_home(*, user: User, invite_code: str) -> HomeMember:
         raise AlreadyHasHomeError("이미 속한 집이 있습니다. 기존 집에서 나간 후 참여해 주세요.")
 
     try:
-        home = Home.objects.get(invite_code=invite_code, status=Home.Status.ACTIVE)
+        home = Home.objects.get(invite_code=invite_code.upper(), status=Home.Status.ACTIVE)
     except Home.DoesNotExist:
         raise HomeNotFoundError("유효하지 않은 초대코드입니다.")
 

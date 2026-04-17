@@ -33,7 +33,7 @@ def get_home_by_invite_code(code: str) -> Home | None:
     """초대코드로 활성 집을 조회합니다. 없으면 None을 반환합니다.
 
     Args:
-        code: 6자리 초대코드.
+        code: 6자리 초대코드 (대소문자 무관).
 
     Returns:
         해당 Home 인스턴스 또는 None.
@@ -41,7 +41,7 @@ def get_home_by_invite_code(code: str) -> Home | None:
     try:
         return (
             Home.objects.prefetch_related("members__user")
-            .get(invite_code=code, status=Home.Status.ACTIVE)
+            .get(invite_code=code.upper(), status=Home.Status.ACTIVE)
         )
     except Home.DoesNotExist:
         return None
