@@ -124,6 +124,7 @@ class SocialAccount(models.Model):
         user: 연결된 유저.
         provider: 소셜 제공자 ('kakao' 또는 'apple').
         provider_id: 제공자가 발급한 고유 유저 ID.
+        refresh_token: Apple 탈퇴 시 token revocation에 사용하는 refresh_token. 카카오는 미사용.
         created_at: 소셜 계정 연결 일시.
         updated_at: 최종 수정 일시.
     """
@@ -135,6 +136,7 @@ class SocialAccount(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_accounts")
     provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES)
     provider_id = models.CharField(max_length=255)
+    refresh_token = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
