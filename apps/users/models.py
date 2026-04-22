@@ -110,6 +110,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         """집 관리자 또는 구성원에 속해있는 경우 True를 반환합니다."""
         return self.home_memberships.exists()
 
+    @property
+    def home_role(self) -> int | None:
+        """집에서의 역할(HomeMember.Role)을 반환합니다. 집에 속하지 않으면 None을 반환합니다."""
+        membership = self.home_memberships.first()
+        return membership.role if membership else None
+
 
 class SocialAccount(models.Model):
     """유저와 소셜 로그인 제공자를 연결하는 모델.

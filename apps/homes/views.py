@@ -1,6 +1,6 @@
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,6 +14,7 @@ from apps.homes.serializers import (
     HomeOutputSerializer,
     ImageIdSerializer,
     StarterPackSerializer,
+    TransferAdminSerializer,
 )
 
 
@@ -74,6 +75,25 @@ class HomeDetailView(APIView):
             raise NotFound("속한 집이 없습니다.")
         return Response(HomeOutputSerializer(home).data)
 
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 삭제 (관리자 전용, 구성원 없을 때만)",
+        responses={
+            204: None,
+            400: OpenApiResponse(description="구성원이 있어 삭제 불가"),
+            403: OpenApiResponse(description="관리자만 집을 삭제할 수 있음"),
+        },
+    )
+    def delete(self, request: Request) -> Response:
+        """현재 유저의 집을 삭제합니다. 관리자 전용이며 구성원이 없어야 합니다."""
+        try:
+            services.delete_home(user=request.user)
+        except services.NotHomeAdminError as e:
+            raise PermissionDenied(str(e)) from e
+        except services.HomeHasMembersError as e:
+            raise ValidationError({"home_has_members": str(e)}) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class HomeInviteView(APIView):
     @extend_schema(
@@ -117,6 +137,52 @@ class HomeJoinView(APIView):
 
         home = selectors.get_user_home(request.user)
         return Response(HomeOutputSerializer(home).data)
+
+
+class HomeLeaveView(APIView):
+    @extend_schema(
+        tags=["Homes"],
+        summary="집 나가기 (구성원 전용)",
+        responses={
+            204: None,
+            403: OpenApiResponse(description="관리자는 양도 후 나갈 수 있음"),
+            404: OpenApiResponse(description="속한 집 없음"),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """현재 유저가 집을 나갑니다. 관리자는 먼저 양도해야 합니다."""
+        try:
+            services.leave_home(user=request.user)
+        except services.HomeNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.AdminCannotLeaveError as e:
+            raise PermissionDenied(str(e)) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HomeTransferAdminView(APIView):
+    @extend_schema(
+        tags=["Homes"],
+        summary="관리자 양도 (관리자 전용)",
+        request=TransferAdminSerializer,
+        responses={
+            204: None,
+            400: OpenApiResponse(description="대상이 같은 집의 구성원이 아님"),
+            403: OpenApiResponse(description="관리자만 양도 가능"),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """집 관리자 권한을 같은 집의 구성원에게 양도합니다."""
+        serializer = TransferAdminSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            services.transfer_admin(user=request.user, target_uid=serializer.validated_data["user_id"])
+        except services.NotHomeAdminError as e:
+            raise PermissionDenied(str(e)) from e
+        except services.TransferAdminTargetError as e:
+            raise ValidationError({"transfer_admin_target": str(e)}) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class StarterPackListView(APIView):

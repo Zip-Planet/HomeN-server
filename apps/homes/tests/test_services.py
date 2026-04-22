@@ -2,10 +2,17 @@ import pytest
 
 from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward
 from apps.homes.services import (
+    AdminCannotLeaveError,
     AlreadyHasHomeError,
+    HomeHasMembersError,
     HomeNotFoundError,
+    NotHomeAdminError,
+    TransferAdminTargetError,
     create_home,
+    delete_home,
     join_home,
+    leave_home,
+    transfer_admin,
 )
 from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
 from apps.users.tests.factories import UserFactory
@@ -114,3 +121,111 @@ class TestJoinHome:
 
         with pytest.raises(HomeNotFoundError):
             join_home(user=user, invite_code="XXXXX")
+
+
+class TestDeleteHome:
+    def test_관리자_혼자일_때_삭제_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        delete_home(user=user)
+
+        assert not Home.objects.filter(pk=home.pk).exists()
+
+    def test_구성원_있으면_삭제_불가(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+
+        with pytest.raises(HomeHasMembersError):
+            delete_home(user=admin)
+
+        assert Home.objects.filter(pk=home.pk).exists()
+
+    def test_구성원은_집_삭제_불가(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+
+        with pytest.raises(NotHomeAdminError):
+            delete_home(user=user)
+
+    def test_집_없는_유저는_집_삭제_불가(self):
+        user = UserFactory()
+
+        with pytest.raises(NotHomeAdminError):
+            delete_home(user=user)
+
+
+class TestLeaveHome:
+    def test_구성원은_집_나가기_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        member = HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        member_pk = member.pk
+
+        leave_home(user=user)
+
+        assert not HomeMember.objects.filter(pk=member_pk).exists()
+        assert Home.objects.filter(pk=home.pk).exists()
+
+    def test_관리자는_집_나가기_불가(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        with pytest.raises(AdminCannotLeaveError):
+            leave_home(user=user)
+
+    def test_집_없는_유저는_집_나가기_불가(self):
+        user = UserFactory()
+
+        with pytest.raises(HomeNotFoundError):
+            leave_home(user=user)
+
+
+class TestTransferAdmin:
+    def test_관리자_양도_성공(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+
+        transfer_admin(user=admin, target_uid=member.uid)
+
+        assert HomeMember.objects.get(user=admin).role == HomeMember.Role.MEMBER
+        assert HomeMember.objects.get(user=member).role == HomeMember.Role.ADMIN
+
+    def test_관리자가_아니면_양도_불가(self):
+        member = UserFactory()
+        other = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+
+        with pytest.raises(NotHomeAdminError):
+            transfer_admin(user=member, target_uid=other.uid)
+
+    def test_다른_집_구성원에게_양도_불가(self):
+        admin = UserFactory()
+        outsider = UserFactory()
+        home = HomeFactory()
+        other_home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=other_home, user=outsider, role=HomeMember.Role.MEMBER)
+
+        with pytest.raises(TransferAdminTargetError):
+            transfer_admin(user=admin, target_uid=outsider.uid)
+
+    def test_집에_없는_유저에게_양도_불가(self):
+        admin = UserFactory()
+        nonmember = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+
+        with pytest.raises(TransferAdminTargetError):
+            transfer_admin(user=admin, target_uid=nonmember.uid)

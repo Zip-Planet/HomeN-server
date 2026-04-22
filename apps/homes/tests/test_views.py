@@ -194,3 +194,134 @@ class TestHomeJoinView:
         res = client.post("/api/v1/homes/join/", {"invite_code": another.invite_code})
 
         assert res.status_code == 400
+
+
+class TestHomeDeleteView:
+    url = "/api/v1/homes/mine/"
+
+    def test_관리자_혼자일_때_삭제_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.delete(self.url)
+
+        assert res.status_code == 204
+        assert not Home.objects.filter(pk=home.pk).exists()
+
+    def test_구성원_있으면_삭제_불가_400(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        client = auth_client(admin)
+
+        res = client.delete(self.url)
+
+        assert res.status_code == 400
+        assert Home.objects.filter(pk=home.pk).exists()
+
+    def test_구성원은_집_삭제_불가_403(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        client = auth_client(user)
+
+        res = client.delete(self.url)
+
+        assert res.status_code == 403
+
+    def test_미인증_401(self):
+        res = APIClient().delete(self.url)
+
+        assert res.status_code == 401
+
+
+class TestHomeLeaveView:
+    url = "/api/v1/homes/mine/leave/"
+
+    def test_구성원_집_나가기_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        client = auth_client(user)
+
+        res = client.post(self.url)
+
+        assert res.status_code == 204
+        assert not HomeMember.objects.filter(user=user).exists()
+        assert Home.objects.filter(pk=home.pk).exists()
+
+    def test_관리자_집_나가기_불가_403(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.post(self.url)
+
+        assert res.status_code == 403
+        assert HomeMember.objects.filter(user=user).exists()
+
+    def test_집_없는_유저_404(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.post(self.url)
+
+        assert res.status_code == 404
+
+    def test_미인증_401(self):
+        res = APIClient().post(self.url)
+
+        assert res.status_code == 401
+
+
+class TestHomeTransferAdminView:
+    url = "/api/v1/homes/mine/transfer-admin/"
+
+    def test_관리자_양도_성공(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        client = auth_client(admin)
+
+        res = client.post(self.url, {"user_id": str(member.uid)}, format="json")
+
+        assert res.status_code == 204
+        assert HomeMember.objects.get(user=admin).role == HomeMember.Role.MEMBER
+        assert HomeMember.objects.get(user=member).role == HomeMember.Role.ADMIN
+
+    def test_구성원은_양도_불가_403(self):
+        user = UserFactory()
+        other = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+        client = auth_client(user)
+
+        res = client.post(self.url, {"user_id": str(other.uid)}, format="json")
+
+        assert res.status_code == 403
+
+    def test_다른_집_구성원에게_양도_불가_400(self):
+        admin = UserFactory()
+        outsider = UserFactory()
+        home = HomeFactory()
+        other_home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=other_home, user=outsider, role=HomeMember.Role.MEMBER)
+        client = auth_client(admin)
+
+        res = client.post(self.url, {"user_id": str(outsider.uid)}, format="json")
+
+        assert res.status_code == 400
+
+    def test_미인증_401(self):
+        res = APIClient().post(self.url, {}, format="json")
+
+        assert res.status_code == 401

@@ -99,6 +99,12 @@ class HomeJoinSerializer(serializers.Serializer):
     invite_code = serializers.CharField(max_length=6)
 
 
+class TransferAdminSerializer(serializers.Serializer):
+    """관리자 양도 요청 시리얼라이저."""
+
+    user_id = serializers.UUIDField()
+
+
 class HomeInviteDetailSerializer(serializers.ModelSerializer):
     """초대코드 조회 출력 시리얼라이저."""
 

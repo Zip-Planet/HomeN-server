@@ -5,6 +5,7 @@ from typing import Any
 from django.db import transaction
 
 from apps.homes.models import Chore, Home, HomeChore, HomeMember, Reward
+from apps.homes.selectors import get_user_membership
 from apps.users.models import User
 
 
@@ -18,6 +19,22 @@ class AlreadyHasHomeError(HomeError):
 
 class HomeNotFoundError(HomeError):
     """초대코드에 해당하는 집이 없을 때 발생합니다."""
+
+
+class NotHomeAdminError(HomeError):
+    """관리자가 아닌 유저가 관리자 전용 작업을 시도할 때 발생합니다."""
+
+
+class HomeHasMembersError(HomeError):
+    """집에 구성원이 있어 삭제할 수 없을 때 발생합니다."""
+
+
+class AdminCannotLeaveError(HomeError):
+    """관리자가 양도 없이 집을 나가려 할 때 발생합니다."""
+
+
+class TransferAdminTargetError(HomeError):
+    """관리자 양도 대상이 올바르지 않을 때 발생합니다."""
 
 
 # ──────────────────────────────────────────
@@ -131,3 +148,91 @@ def join_home(*, user: User, invite_code: str) -> HomeMember:
         raise HomeNotFoundError("유효하지 않은 초대코드입니다.")
 
     return HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.MEMBER)
+
+
+# ──────────────────────────────────────────
+# 집 삭제
+# ──────────────────────────────────────────
+
+
+def delete_home(*, user: User) -> None:
+    """유저가 속한 집을 삭제합니다. 관리자 전용이며 다른 구성원이 없어야 합니다.
+
+    집을 삭제하면 모든 집안일, 리워드가 함께 삭제됩니다.
+    단, 향후 구현될 집안일 완료 이력은 유저 FK에 SET_NULL을 사용해 보존합니다.
+
+    Args:
+        user: 삭제를 요청한 User 인스턴스.
+
+    Raises:
+        NotHomeAdminError: 관리자가 아니거나 집에 속하지 않은 경우.
+        HomeHasMembersError: 집에 구성원(관리자 외)이 남아있는 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None or membership.role != HomeMember.Role.ADMIN:
+        raise NotHomeAdminError("관리자만 집을 삭제할 수 있습니다.")
+
+    has_members = HomeMember.objects.filter(home=membership.home, role=HomeMember.Role.MEMBER).exists()
+    if has_members:
+        raise HomeHasMembersError("구성원이 있는 경우 집을 삭제할 수 없습니다. 구성원이 모두 나간 후 삭제해 주세요.")
+
+    membership.home.delete()
+
+
+# ──────────────────────────────────────────
+# 집 나가기
+# ──────────────────────────────────────────
+
+
+def leave_home(*, user: User) -> None:
+    """집을 나갑니다. 구성원만 가능하며 관리자는 양도 후 나갈 수 있습니다.
+
+    Args:
+        user: 나가려는 User 인스턴스.
+
+    Raises:
+        HomeNotFoundError: 속한 집이 없는 경우.
+        AdminCannotLeaveError: 관리자가 양도 없이 나가려는 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeNotFoundError("속한 집이 없습니다.")
+    if membership.role == HomeMember.Role.ADMIN:
+        raise AdminCannotLeaveError("관리자는 먼저 다른 구성원에게 관리자를 양도해야 합니다.")
+    membership.delete()
+
+
+# ──────────────────────────────────────────
+# 관리자 양도
+# ──────────────────────────────────────────
+
+
+def transfer_admin(*, user: User, target_uid: str) -> None:
+    """집 관리자 권한을 같은 집의 구성원에게 양도합니다.
+
+    Args:
+        user: 현재 관리자인 User 인스턴스.
+        target_uid: 관리자를 넘겨받을 구성원의 uid (UUID 문자열).
+
+    Raises:
+        NotHomeAdminError: 요청자가 관리자가 아닌 경우.
+        TransferAdminTargetError: 대상이 같은 집의 구성원이 아닌 경우.
+    """
+    my_membership = get_user_membership(user)
+    if my_membership is None or my_membership.role != HomeMember.Role.ADMIN:
+        raise NotHomeAdminError("관리자만 관리자를 양도할 수 있습니다.")
+
+    try:
+        target_membership = HomeMember.objects.get(
+            home=my_membership.home,
+            user__uid=target_uid,
+            role=HomeMember.Role.MEMBER,
+        )
+    except HomeMember.DoesNotExist:
+        raise TransferAdminTargetError("해당 유저는 같은 집의 구성원이 아닙니다.")
+
+    with transaction.atomic():
+        my_membership.role = HomeMember.Role.MEMBER
+        my_membership.save(update_fields=["role"])
+        target_membership.role = HomeMember.Role.ADMIN
+        target_membership.save(update_fields=["role"])
