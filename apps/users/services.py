@@ -1,3 +1,4 @@
+import logging
 import time
 
 import jwt
@@ -9,12 +10,22 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.users.models import SocialAccount, User
 from apps.users.selectors import get_social_account
 
+logger = logging.getLogger(__name__)
+
 
 class SocialLoginError(Exception):
     pass
 
 
 class ProfileUpdateError(Exception):
+    pass
+
+
+class HomeAdminWithdrawalError(Exception):
+    pass
+
+
+class LogoutError(Exception):
     pass
 
 
@@ -35,23 +46,29 @@ def _issue_tokens(user: User) -> dict[str, str]:
     return {"access": str(refresh.access_token), "refresh": str(refresh)}
 
 
-def _get_or_create_social_user(*, provider: str, provider_id: str) -> User:
+def _get_or_create_social_user(*, provider: str, provider_id: str, refresh_token: str = "") -> User:
     """소셜 계정으로 기존 유저를 조회하거나 신규 유저를 생성합니다.
+
+    재로그인 시 refresh_token이 제공되면 최신 값으로 갱신합니다 (Apple 탈퇴 revocation 대비).
 
     Args:
         provider: 소셜 제공자 이름 ('kakao' 또는 'apple').
         provider_id: 제공자가 발급한 고유 유저 ID.
+        refresh_token: Apple 로그인 시 발급된 refresh_token. 카카오는 빈 문자열.
 
     Returns:
         소셜 계정에 연결된 User 인스턴스.
     """
     social = get_social_account(provider, provider_id)
     if social:
+        if refresh_token and social.refresh_token != refresh_token:
+            social.refresh_token = refresh_token
+            social.save(update_fields=["refresh_token", "updated_at"])
         return social.user
 
     with transaction.atomic():
         user = User.objects.create_user()
-        SocialAccount.objects.create(user=user, provider=provider, provider_id=provider_id)
+        SocialAccount.objects.create(user=user, provider=provider, provider_id=provider_id, refresh_token=refresh_token)
     return user
 
 
@@ -111,6 +128,24 @@ def _get_kakao_user_info(access_token: str) -> dict:
     if response.status_code != 200:
         raise SocialLoginError(f"카카오 사용자 정보 조회 실패: {response.status_code} {response.text}")
     return response.json()
+
+
+def _kakao_unlink(provider_id: str) -> None:
+    """카카오 앱 연결을 끊습니다 (Admin Key 방식).
+
+    실패 시 경고 로그를 남기고 계속 진행합니다. 탈퇴 자체를 막지 않습니다.
+
+    Args:
+        provider_id: 카카오 유저 고유 ID.
+    """
+    response = requests.post(
+        "https://kapi.kakao.com/v1/user/unlink",
+        headers={"Authorization": f"KakaoAK {settings.KAKAO_ADMIN_KEY}"},
+        data={"target_id_type": "user_id", "target_id": provider_id},
+        timeout=10,
+    )
+    if response.status_code != 200:
+        logger.warning("카카오 unlink 실패: provider_id=%s status=%s body=%s", provider_id, response.status_code, response.text)
 
 
 def kakao_login(*, code: str) -> dict[str, str]:
@@ -208,6 +243,30 @@ def _decode_apple_id_token(id_token: str) -> dict:
     return jwt.decode(id_token, options={"verify_signature": False})
 
 
+def _apple_revoke_token(refresh_token: str) -> None:
+    """Apple refresh_token을 revoke합니다.
+
+    App Store 가이드라인(5.1.1)에 따라 계정 삭제 시 호출해야 합니다.
+    실패 시 경고 로그를 남기고 계속 진행합니다. 탈퇴 자체를 막지 않습니다.
+
+    Args:
+        refresh_token: Apple 로그인 시 발급받아 저장된 refresh_token.
+    """
+    client_secret = _generate_apple_client_secret()
+    response = requests.post(
+        "https://appleid.apple.com/auth/revoke",
+        data={
+            "client_id": settings.APPLE_CLIENT_ID,
+            "client_secret": client_secret,
+            "token": refresh_token,
+            "token_type_hint": "refresh_token",
+        },
+        timeout=10,
+    )
+    if response.status_code != 200:
+        logger.warning("Apple token revoke 실패: status=%s body=%s", response.status_code, response.text)
+
+
 def apple_login(*, code: str) -> dict[str, str]:
     """Apple Sign In으로 유저를 인증하고 JWT 토큰을 반환합니다.
 
@@ -225,9 +284,63 @@ def apple_login(*, code: str) -> dict[str, str]:
     user_info = _decode_apple_id_token(token_data["id_token"])
 
     provider_id = user_info["sub"]
+    refresh_token = token_data.get("refresh_token", "")
 
-    user = _get_or_create_social_user(provider=SocialAccount.APPLE, provider_id=provider_id)
+    user = _get_or_create_social_user(provider=SocialAccount.APPLE, provider_id=provider_id, refresh_token=refresh_token)
     return {**_issue_tokens(user), "is_profile_set": user.is_profile_set, "has_home": user.has_home}
+
+
+def withdraw_user(*, user: User) -> None:
+    """유저 탈퇴를 처리합니다.
+
+    구성원은 즉시 탈퇴 가능합니다.
+    관리자는 집을 삭제하거나 관리자를 양도한 후 탈퇴해야 합니다.
+    탈퇴 전 각 소셜 제공자의 연결을 해제합니다.
+    연결 해제 실패 시 로그를 남기고 탈퇴는 계속 진행합니다.
+
+    Args:
+        user: 탈퇴할 User 인스턴스.
+
+    Raises:
+        HomeAdminWithdrawalError: 집 관리자가 사전 처리 없이 탈퇴 시도한 경우.
+    """
+    from apps.homes.models import HomeMember
+
+    membership = user.home_memberships.first()
+    if membership and membership.role == HomeMember.Role.ADMIN:
+        raise HomeAdminWithdrawalError("집을 삭제하거나 관리자를 양도한 후 탈퇴해 주세요.")
+
+    for social in user.social_accounts.all():
+        try:
+            if social.provider == SocialAccount.KAKAO:
+                _kakao_unlink(social.provider_id)
+            elif social.provider == SocialAccount.APPLE and social.refresh_token:
+                _apple_revoke_token(social.refresh_token)
+        except Exception:
+            logger.warning("소셜 연결 해제 실패: provider=%s provider_id=%s", social.provider, social.provider_id, exc_info=True)
+
+    user.delete()
+
+
+def logout_user(*, refresh_token: str) -> None:
+    """Refresh 토큰을 블랙리스트에 등록하여 로그아웃 처리합니다.
+
+    블랙리스트 등록 후 해당 refresh_token으로 새 access_token을 발급받을 수 없습니다.
+    기존 access_token은 만료 시각까지 유효하나 단기(1시간)이므로 허용 범위입니다.
+
+    Args:
+        refresh_token: 클라이언트가 보유한 refresh_token 문자열.
+
+    Raises:
+        LogoutError: 토큰이 유효하지 않거나 이미 블랙리스트에 등록된 경우.
+    """
+    from rest_framework_simplejwt.exceptions import TokenError
+    from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
+
+    try:
+        JWTRefreshToken(refresh_token).blacklist()
+    except TokenError as e:
+        raise LogoutError("유효하지 않은 토큰입니다.") from e
 
 
 def update_profile(*, user: User, name: str, profile_image: int) -> User:

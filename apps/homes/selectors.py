@@ -1,6 +1,6 @@
 from django.db.models import QuerySet
 
-from apps.homes.models import Chore, Home, HomeImageType, HomeMember, StarterPack
+from apps.homes.models import Chore, Home, HomeChore, HomeImageType, HomeMember, StarterPack
 from apps.users.models import User
 
 
@@ -29,6 +29,18 @@ def get_user_home(user: User) -> Home | None:
         return None
 
 
+def get_user_membership(user: User) -> HomeMember | None:
+    """유저의 집 멤버십을 반환합니다. 없으면 None을 반환합니다.
+
+    Args:
+        user: 조회할 User 인스턴스.
+
+    Returns:
+        유저의 HomeMember 인스턴스 또는 None.
+    """
+    return HomeMember.objects.select_related("home").filter(user=user).first()
+
+
 def get_home_by_invite_code(code: str) -> Home | None:
     """초대코드로 활성 집을 조회합니다. 없으면 None을 반환합니다.
 
@@ -50,6 +62,18 @@ def get_home_by_invite_code(code: str) -> Home | None:
 def get_starter_packs() -> QuerySet[StarterPack]:
     """모든 스타터팩 목록을 반환합니다."""
     return StarterPack.objects.all()
+
+
+def get_home_chores(home: Home) -> QuerySet[HomeChore]:
+    """집에 배정된 집안일 목록을 반환합니다.
+
+    Args:
+        home: 조회할 Home 인스턴스.
+
+    Returns:
+        HomeChore QuerySet (chore 관계 prefetch 포함).
+    """
+    return HomeChore.objects.select_related("chore").filter(home=home).order_by("id")
 
 
 def get_starter_pack_chores(starter_pack_id: int) -> QuerySet[Chore]:

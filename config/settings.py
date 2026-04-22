@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
     "django.contrib.postgres",
     # Local
@@ -110,6 +111,7 @@ SIMPLE_JWT = {
 
 # Kakao OAuth2
 KAKAO_REST_API_KEY = env("KAKAO_REST_API_KEY", default="kakao-rest-api-key-placeholder")
+KAKAO_ADMIN_KEY = env("KAKAO_ADMIN_KEY", default="")
 KAKAO_CLIENT_SECRET = env("KAKAO_CLIENT_SECRET", default="")
 KAKAO_REDIRECT_URI = env("KAKAO_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/kakao/")
 

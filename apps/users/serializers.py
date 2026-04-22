@@ -28,12 +28,19 @@ class UserProfileOutputSerializer(serializers.Serializer):
     profile_image = serializers.IntegerField(allow_null=True)
     is_profile_set = serializers.BooleanField()
     has_home = serializers.BooleanField()
+    home_role = serializers.IntegerField(allow_null=True)
 
 
 class ProfileImageIdSerializer(serializers.Serializer):
     """프로필 이미지 enum ID 목록 응답 시리얼라이저."""
 
     id = serializers.IntegerField()
+
+
+class LogoutSerializer(serializers.Serializer):
+    """로그아웃 요청 시리얼라이저."""
+
+    refresh = serializers.CharField()
 
 
 class UserProfileUpdateSerializer(serializers.Serializer):

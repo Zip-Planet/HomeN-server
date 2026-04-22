@@ -21,6 +21,7 @@ class SocialAccountFactory(factory.django.DjangoModelFactory):
     user = factory.SubFactory(UserFactory)
     provider = SocialAccount.KAKAO
     provider_id = factory.Sequence(lambda n: f"kakao_id_{n}")
+    refresh_token = ""
 
     class Meta:
         model = SocialAccount

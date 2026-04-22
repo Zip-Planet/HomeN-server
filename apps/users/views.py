@@ -1,6 +1,6 @@
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import AuthenticationFailed, ValidationError
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -10,6 +10,7 @@ from apps.users import selectors, services
 from apps.users.serializers import (
     AppleLoginSerializer,
     KakaoLoginSerializer,
+    LogoutSerializer,
     ProfileImageIdSerializer,
     TokenOutputSerializer,
     UserProfileOutputSerializer,
@@ -40,6 +41,31 @@ class KakaoLoginView(APIView):
             raise AuthenticationFailed(str(e)) from e
 
         return Response(TokenOutputSerializer(result).data, status=status.HTTP_200_OK)
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Auth"],
+        summary="로그아웃",
+        request=LogoutSerializer,
+        responses={
+            204: None,
+            400: OpenApiResponse(description="유효하지 않은 토큰"),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """Refresh 토큰을 블랙리스트에 등록하여 로그아웃합니다."""
+        serializer = LogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            services.logout_user(refresh_token=serializer.validated_data["refresh"])
+        except services.LogoutError as e:
+            raise ValidationError({"invalid_token": str(e)}) from e
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AppleLoginView(APIView):
@@ -99,6 +125,22 @@ class UserMeView(APIView):
             raise ValidationError({"duplicate_nickname": str(e)}) from e
 
         return Response(UserProfileOutputSerializer(user).data)
+
+    @extend_schema(
+        tags=["Users"],
+        summary="회원 탈퇴",
+        responses={
+            204: None,
+            403: OpenApiResponse(description="집 관리자는 집 삭제 또는 관리자 양도 후 탈퇴 가능"),
+        },
+    )
+    def delete(self, request: Request) -> Response:
+        """현재 로그인한 유저를 탈퇴 처리합니다."""
+        try:
+            services.withdraw_user(user=request.user)
+        except services.HomeAdminWithdrawalError as e:
+            raise PermissionDenied({"home_admin_cannot_withdraw": str(e)}) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProfileImageListView(APIView):

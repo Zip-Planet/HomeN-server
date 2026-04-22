@@ -110,6 +110,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         """집 관리자 또는 구성원에 속해있는 경우 True를 반환합니다."""
         return self.home_memberships.exists()
 
+    @property
+    def home_role(self) -> int | None:
+        """집에서의 역할(HomeMember.Role)을 반환합니다. 집에 속하지 않으면 None을 반환합니다."""
+        membership = self.home_memberships.first()
+        return membership.role if membership else None
+
 
 class SocialAccount(models.Model):
     """유저와 소셜 로그인 제공자를 연결하는 모델.
@@ -118,6 +124,7 @@ class SocialAccount(models.Model):
         user: 연결된 유저.
         provider: 소셜 제공자 ('kakao' 또는 'apple').
         provider_id: 제공자가 발급한 고유 유저 ID.
+        refresh_token: Apple 탈퇴 시 token revocation에 사용하는 refresh_token. 카카오는 미사용.
         created_at: 소셜 계정 연결 일시.
         updated_at: 최종 수정 일시.
     """
@@ -129,6 +136,7 @@ class SocialAccount(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_accounts")
     provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES)
     provider_id = models.CharField(max_length=255)
+    refresh_token = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
