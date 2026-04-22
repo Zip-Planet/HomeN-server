@@ -37,6 +37,12 @@ class ProfileImageIdSerializer(serializers.Serializer):
     id = serializers.IntegerField()
 
 
+class LogoutSerializer(serializers.Serializer):
+    """로그아웃 요청 시리얼라이저."""
+
+    refresh = serializers.CharField()
+
+
 class UserProfileUpdateSerializer(serializers.Serializer):
     """유저 프로필 업데이트 요청 시리얼라이저."""
 

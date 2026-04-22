@@ -5,7 +5,7 @@ import pytest
 from apps.homes.models import HomeMember
 from apps.homes.tests.factories import HomeMemberFactory
 from apps.users.models import SocialAccount, User, UserProfileImage
-from apps.users.services import HomeAdminWithdrawalError, ProfileUpdateError, SocialLoginError, apple_login, kakao_login, update_profile, withdraw_user
+from apps.users.services import HomeAdminWithdrawalError, LogoutError, ProfileUpdateError, SocialLoginError, apple_login, kakao_login, logout_user, update_profile, withdraw_user
 from apps.users.tests.factories import SocialAccountFactory, UserFactory
 
 KAKAO_USER_INFO = {
@@ -228,3 +228,29 @@ class TestWithdrawUser:
         withdraw_user(user=user)
 
         assert not User.objects.filter(pk=user_pk).exists()
+
+
+@pytest.mark.django_db
+class TestLogoutUser:
+    def test_유효한_토큰_로그아웃_성공(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        user = UserFactory()
+        refresh = RefreshToken.for_user(user)
+
+        logout_user(refresh_token=str(refresh))
+
+        with pytest.raises(LogoutError):
+            logout_user(refresh_token=str(refresh))
+
+    def test_블랙리스트_토큰_재사용_불가(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        user = UserFactory()
+        refresh = RefreshToken.for_user(user)
+        logout_user(refresh_token=str(refresh))
+
+        with pytest.raises(LogoutError):
+            logout_user(refresh_token=str(refresh))
+
+    def test_유효하지_않은_토큰_오류(self):
+        with pytest.raises(LogoutError):
+            logout_user(refresh_token="invalid.token.value")
