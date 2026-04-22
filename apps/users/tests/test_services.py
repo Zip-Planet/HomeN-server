@@ -2,8 +2,10 @@ from unittest.mock import patch
 
 import pytest
 
+from apps.homes.models import HomeMember
+from apps.homes.tests.factories import HomeMemberFactory
 from apps.users.models import SocialAccount, User, UserProfileImage
-from apps.users.services import ProfileUpdateError, SocialLoginError, apple_login, kakao_login, update_profile
+from apps.users.services import HomeAdminWithdrawalError, ProfileUpdateError, SocialLoginError, apple_login, kakao_login, update_profile, withdraw_user
 from apps.users.tests.factories import SocialAccountFactory, UserFactory
 
 KAKAO_USER_INFO = {
@@ -119,3 +121,42 @@ class TestUpdateProfile:
 
         assert updated.name == "홍길동"
         assert updated.profile_image == UserProfileImage.TYPE_2
+
+
+@pytest.mark.django_db
+class TestWithdrawUser:
+    def test_집_없는_유저는_즉시_탈퇴(self):
+        user = UserFactory()
+
+        withdraw_user(user=user)
+
+        assert not User.objects.filter(pk=user.pk).exists()
+
+    def test_구성원은_즉시_탈퇴(self):
+        user = UserFactory()
+        member = HomeMemberFactory(user=user, role=HomeMember.Role.MEMBER)
+        user_pk = user.pk
+        member_pk = member.pk
+
+        withdraw_user(user=user)
+
+        assert not User.objects.filter(pk=user_pk).exists()
+        assert not HomeMember.objects.filter(pk=member_pk).exists()
+
+    def test_관리자는_탈퇴_불가(self):
+        user = UserFactory()
+        HomeMemberFactory(user=user, role=HomeMember.Role.ADMIN)
+
+        with pytest.raises(HomeAdminWithdrawalError):
+            withdraw_user(user=user)
+
+        assert User.objects.filter(pk=user.pk).exists()
+
+    def test_탈퇴_시_소셜계정도_삭제(self):
+        user = UserFactory()
+        social = SocialAccountFactory(user=user)
+        social_pk = social.pk
+
+        withdraw_user(user=user)
+
+        assert not SocialAccount.objects.filter(pk=social_pk).exists()

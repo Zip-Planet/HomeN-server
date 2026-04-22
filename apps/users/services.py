@@ -18,6 +18,10 @@ class ProfileUpdateError(Exception):
     pass
 
 
+class HomeAdminWithdrawalError(Exception):
+    pass
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -228,6 +232,26 @@ def apple_login(*, code: str) -> dict[str, str]:
 
     user = _get_or_create_social_user(provider=SocialAccount.APPLE, provider_id=provider_id)
     return {**_issue_tokens(user), "is_profile_set": user.is_profile_set, "has_home": user.has_home}
+
+
+def withdraw_user(*, user: User) -> None:
+    """유저 탈퇴를 처리합니다.
+
+    구성원은 즉시 탈퇴 가능합니다.
+    관리자는 집을 삭제하거나 관리자를 양도한 후 탈퇴해야 합니다.
+
+    Args:
+        user: 탈퇴할 User 인스턴스.
+
+    Raises:
+        HomeAdminWithdrawalError: 집 관리자가 사전 처리 없이 탈퇴 시도한 경우.
+    """
+    from apps.homes.models import HomeMember
+
+    membership = user.home_memberships.first()
+    if membership and membership.role == HomeMember.Role.ADMIN:
+        raise HomeAdminWithdrawalError("집을 삭제하거나 관리자를 양도한 후 탈퇴해 주세요.")
+    user.delete()
 
 
 def update_profile(*, user: User, name: str, profile_image: int) -> User:

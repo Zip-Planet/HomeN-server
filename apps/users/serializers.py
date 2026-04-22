@@ -28,6 +28,7 @@ class UserProfileOutputSerializer(serializers.Serializer):
     profile_image = serializers.IntegerField(allow_null=True)
     is_profile_set = serializers.BooleanField()
     has_home = serializers.BooleanField()
+    home_role = serializers.IntegerField(allow_null=True)
 
 
 class ProfileImageIdSerializer(serializers.Serializer):

@@ -29,6 +29,18 @@ def get_user_home(user: User) -> Home | None:
         return None
 
 
+def get_user_membership(user: User) -> HomeMember | None:
+    """유저의 집 멤버십을 반환합니다. 없으면 None을 반환합니다.
+
+    Args:
+        user: 조회할 User 인스턴스.
+
+    Returns:
+        유저의 HomeMember 인스턴스 또는 None.
+    """
+    return HomeMember.objects.select_related("home").filter(user=user).first()
+
+
 def get_home_by_invite_code(code: str) -> Home | None:
     """초대코드로 활성 집을 조회합니다. 없으면 None을 반환합니다.
 
