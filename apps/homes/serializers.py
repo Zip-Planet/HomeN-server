@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeMember, HomeImageType, Reward, StarterPack
+from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, StarterPack
 
 
 class HomeCreateSerializer(serializers.Serializer):
@@ -11,7 +11,7 @@ class HomeCreateSerializer(serializers.Serializer):
     class ChoreInputSerializer(serializers.Serializer):
         category = serializers.ChoiceField(choices=ChoreCategory.choices)
         name = serializers.CharField(max_length=20)
-        description = serializers.CharField(max_length=50, default="", allow_blank=True)
+        description = serializers.CharField(max_length=20, default="", allow_blank=True)
         repeat_days = serializers.ListField(
             child=serializers.ChoiceField(choices=Chore.Weekday.choices),
             default=list,
@@ -103,6 +103,47 @@ class TransferAdminSerializer(serializers.Serializer):
     """관리자 양도 요청 시리얼라이저."""
 
     user_id = serializers.UUIDField()
+
+
+class HomeChoreCreateSerializer(serializers.Serializer):
+    """집안일 생성 요청 시리얼라이저 (단건 및 복수 생성 공통)."""
+
+    category = serializers.ChoiceField(choices=ChoreCategory.choices)
+    name = serializers.CharField(max_length=20)
+    description = serializers.CharField(max_length=20, default="", allow_blank=True)
+    repeat_days = serializers.ListField(
+        child=serializers.ChoiceField(choices=Chore.Weekday.choices),
+        default=list,
+    )
+    difficulty = serializers.ChoiceField(choices=Chore.Difficulty.choices)
+
+
+class HomeChoreListCreateSerializer(serializers.Serializer):
+    """집안일 리스트 생성 요청 시리얼라이저."""
+
+    chores = HomeChoreCreateSerializer(many=True)
+
+
+class HomeChoreOutputSerializer(serializers.ModelSerializer):
+    """집 집안일 출력 시리얼라이저 (memo 포함)."""
+
+    category = serializers.IntegerField(source="chore.category")
+    category_label = serializers.CharField(source="chore.get_category_display")
+    name = serializers.CharField(source="chore.name")
+    description = serializers.CharField(source="chore.description")
+    repeat_days = serializers.ListField(source="chore.repeat_days")
+    difficulty = serializers.IntegerField(source="chore.difficulty")
+    difficulty_label = serializers.CharField(source="chore.get_difficulty_display")
+
+    class Meta:
+        model = HomeChore
+        fields = ["id", "category", "category_label", "name", "description", "repeat_days", "difficulty", "difficulty_label", "memo"]
+
+
+class ChoreMemoUpdateSerializer(serializers.Serializer):
+    """집안일 메모 수정 요청 시리얼라이저."""
+
+    memo = serializers.CharField(max_length=200, allow_blank=True)
 
 
 class HomeInviteDetailSerializer(serializers.ModelSerializer):

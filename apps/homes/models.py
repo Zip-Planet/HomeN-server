@@ -25,14 +25,9 @@ class ChoreCategory(models.IntegerChoices):
 
     TRASH = 1, "쓰레기"
     BATHROOM = 2, "욕실"
-    KITCHEN = 3, "주방"
-    LIVING_ROOM = 4, "거실"
-    BEDROOM = 5, "침실"
-    LAUNDRY = 6, "빨래"
-    COOKING = 7, "요리"
-    DISHES = 8, "설거지"
-    VACUUM = 9, "청소기"
-    ETC = 10, "기타"
+    CLEANING = 3, "청소"
+    KITCHEN = 4, "주방"
+    LAUNDRY = 5, "세탁"
 
 
 class Home(models.Model):
@@ -154,7 +149,7 @@ class Chore(models.Model):
     )
     category = models.IntegerField(choices=ChoreCategory.choices)
     name = models.CharField(max_length=20)
-    description = models.CharField(max_length=50, blank=True, default="")
+    description = models.CharField(max_length=20, blank=True, default="")
     repeat_days = ArrayField(models.IntegerField(choices=Weekday.choices), default=list)
     difficulty = models.IntegerField(choices=Difficulty.choices)
 
@@ -176,6 +171,7 @@ class HomeChore(models.Model):
 
     home = models.ForeignKey(Home, on_delete=models.CASCADE, related_name="home_chores")
     chore = models.ForeignKey(Chore, on_delete=models.CASCADE, related_name="home_chores")
+    memo = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

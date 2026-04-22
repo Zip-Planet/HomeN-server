@@ -42,8 +42,8 @@ class TestCreateHome:
     def test_집안일_함께_생성(self):
         user = UserFactory()
         chores_data = [
-            {"category": ChoreCategory.DISHES, "name": "설거지", "description": "그릇 닦기", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
-            {"category": ChoreCategory.VACUUM, "name": "청소기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+            {"category": ChoreCategory.CLEANING, "name": "청소", "description": "방 청소", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
+            {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
         ]
 
         home = create_home(

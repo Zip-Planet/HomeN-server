@@ -2,8 +2,8 @@ import pytest
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeMember, HomeImageType
-from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
+from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType
+from apps.homes.tests.factories import ChoreFactory, HomeChoreFactory, HomeFactory, HomeMemberFactory
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -39,8 +39,8 @@ class TestHomeCreateView:
             "name": "우리집",
             "image_id": HomeImageType.TYPE_1,
             "chores": [
-                {"category": ChoreCategory.DISHES, "name": "설거지", "description": "그릇 닦기", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
-                {"category": ChoreCategory.VACUUM, "name": "청소기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+                {"category": ChoreCategory.CLEANING, "name": "청소", "description": "방 청소", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
+                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
             ],
             "rewards": [{"name": "치킨", "goal_point": 100}],
         }
@@ -323,5 +323,161 @@ class TestHomeTransferAdminView:
 
     def test_미인증_401(self):
         res = APIClient().post(self.url, {}, format="json")
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreListView:
+    url = "/api/v1/homes/mine/chores/"
+
+    def test_관리자_집안일_생성_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {
+            "chores": [
+                {"category": ChoreCategory.TRASH, "name": "쓰레기 버리기", "description": "분리수거", "repeat_days": [0, 3], "difficulty": Chore.Difficulty.LOW},
+                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+            ]
+        }
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 201
+        assert len(res.data) == 2
+        assert res.data[0]["name"] == "쓰레기 버리기"
+        assert res.data[0]["memo"] == ""
+        assert HomeChore.objects.filter(home=home).count() == 2
+
+    def test_단건_생성_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {
+            "chores": [
+                {"category": ChoreCategory.KITCHEN, "name": "설거지", "description": "", "repeat_days": [1], "difficulty": Chore.Difficulty.MEDIUM_LOW},
+            ]
+        }
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 201
+        assert len(res.data) == 1
+
+    def test_구성원도_집안일_생성_가능(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        client = auth_client(user)
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 201
+
+    def test_집_없는_유저_404(self):
+        user = UserFactory()
+        client = auth_client(user)
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 404
+
+    def test_잘못된_카테고리_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {"chores": [{"category": 9999, "name": "집안일", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 400
+
+    def test_제목_20자_초과_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "a" * 21, "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 400
+
+    def test_설명_20자_초과_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "집안일", "description": "a" * 21, "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 400
+
+    def test_미인증_401(self):
+        res = APIClient().post(self.url, {}, format="json")
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreDetailView:
+    def test_메모_수정_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": "메모 내용"}, format="json")
+
+        assert res.status_code == 200
+        assert res.data["memo"] == "메모 내용"
+        home_chore.refresh_from_db()
+        assert home_chore.memo == "메모 내용"
+
+    def test_메모_빈_문자열로_수정_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": ""}, format="json")
+
+        assert res.status_code == 200
+        assert res.data["memo"] == ""
+
+    def test_다른_집_집안일_수정_불가_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        other_home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        other_home_chore = HomeChoreFactory(home=other_home, chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(f"/api/v1/homes/mine/chores/{other_home_chore.pk}/", {"memo": "메모"}, format="json")
+
+        assert res.status_code == 404
+
+    def test_집_없는_유저_404(self):
+        user = UserFactory()
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": "메모"}, format="json")
+
+        assert res.status_code == 404
+
+    def test_미인증_401(self):
+        res = APIClient().patch("/api/v1/homes/mine/chores/1/", {"memo": "메모"}, format="json")
 
         assert res.status_code == 401
