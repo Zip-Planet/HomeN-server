@@ -10,6 +10,7 @@ from apps.users import selectors, services
 from apps.users.serializers import (
     AppleLoginSerializer,
     KakaoLoginSerializer,
+    LogoutSerializer,
     ProfileImageIdSerializer,
     TokenOutputSerializer,
     UserProfileOutputSerializer,
@@ -40,6 +41,31 @@ class KakaoLoginView(APIView):
             raise AuthenticationFailed(str(e)) from e
 
         return Response(TokenOutputSerializer(result).data, status=status.HTTP_200_OK)
+
+
+class LogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Auth"],
+        summary="로그아웃",
+        request=LogoutSerializer,
+        responses={
+            204: None,
+            400: OpenApiResponse(description="유효하지 않은 토큰"),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """Refresh 토큰을 블랙리스트에 등록하여 로그아웃합니다."""
+        serializer = LogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            services.logout_user(refresh_token=serializer.validated_data["refresh"])
+        except services.LogoutError as e:
+            raise ValidationError({"invalid_token": str(e)}) from e
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AppleLoginView(APIView):

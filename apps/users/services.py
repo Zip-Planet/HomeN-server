@@ -25,6 +25,10 @@ class HomeAdminWithdrawalError(Exception):
     pass
 
 
+class LogoutError(Exception):
+    pass
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -316,6 +320,27 @@ def withdraw_user(*, user: User) -> None:
             logger.warning("소셜 연결 해제 실패: provider=%s provider_id=%s", social.provider, social.provider_id, exc_info=True)
 
     user.delete()
+
+
+def logout_user(*, refresh_token: str) -> None:
+    """Refresh 토큰을 블랙리스트에 등록하여 로그아웃 처리합니다.
+
+    블랙리스트 등록 후 해당 refresh_token으로 새 access_token을 발급받을 수 없습니다.
+    기존 access_token은 만료 시각까지 유효하나 단기(1시간)이므로 허용 범위입니다.
+
+    Args:
+        refresh_token: 클라이언트가 보유한 refresh_token 문자열.
+
+    Raises:
+        LogoutError: 토큰이 유효하지 않거나 이미 블랙리스트에 등록된 경우.
+    """
+    from rest_framework_simplejwt.exceptions import TokenError
+    from rest_framework_simplejwt.tokens import RefreshToken as JWTRefreshToken
+
+    try:
+        JWTRefreshToken(refresh_token).blacklist()
+    except TokenError as e:
+        raise LogoutError("유효하지 않은 토큰입니다.") from e
 
 
 def update_profile(*, user: User, name: str, profile_image: int) -> User:

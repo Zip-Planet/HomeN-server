@@ -247,3 +247,52 @@ class TestProfileImageListView:
         assert len(response.data) == len(UserProfileImage.choices)
         assert "id" in response.data[0]
         assert response.data[0]["id"] == UserProfileImage.TYPE_1
+
+
+@pytest.mark.django_db
+class TestLogoutView:
+    url = "/api/v1/auth/logout/"
+
+    def test_로그아웃_성공(self, api_client):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        user = UserFactory()
+        refresh = RefreshToken.for_user(user)
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(self.url, {"refresh": str(refresh)}, format="json")
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+    def test_블랙리스트_토큰_재사용_불가(self, api_client):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        user = UserFactory()
+        refresh = RefreshToken.for_user(user)
+        api_client.force_authenticate(user=user)
+        api_client.post(self.url, {"refresh": str(refresh)}, format="json")
+
+        response = api_client.post(self.url, {"refresh": str(refresh)}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "error" in response.data
+
+    def test_유효하지_않은_토큰_400(self, api_client):
+        user = UserFactory()
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(self.url, {"refresh": "invalid.token"}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "error" in response.data
+
+    def test_미인증_401(self, api_client):
+        response = api_client.post(self.url, {"refresh": "any"}, format="json")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_refresh_필드_누락_400(self, api_client):
+        user = UserFactory()
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(self.url, {}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
