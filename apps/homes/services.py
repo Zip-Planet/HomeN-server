@@ -37,6 +37,10 @@ class TransferAdminTargetError(HomeError):
     """관리자 양도 대상이 올바르지 않을 때 발생합니다."""
 
 
+class HomeChoreNotFoundError(HomeError):
+    """집안일을 찾을 수 없을 때 발생합니다."""
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -236,3 +240,80 @@ def transfer_admin(*, user: User, target_uid: str) -> None:
         my_membership.save(update_fields=["role"])
         target_membership.role = HomeMember.Role.ADMIN
         target_membership.save(update_fields=["role"])
+
+
+# ──────────────────────────────────────────
+# 집안일 생성
+# ──────────────────────────────────────────
+
+
+def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[HomeChore]:
+    """유저의 집에 집안일을 추가합니다.
+
+    단건 및 복수 생성 모두 지원합니다.
+
+    Args:
+        user: 요청한 User 인스턴스.
+        chores: 생성할 집안일 데이터 목록.
+
+    Returns:
+        생성된 HomeChore 인스턴스 목록.
+
+    Raises:
+        NotHomeAdminError: 요청자가 관리자가 아닌 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeNotFoundError("속한 집이 없습니다.")
+
+    with transaction.atomic():
+        chore_objs = Chore.objects.bulk_create([
+            Chore(
+                category=c["category"],
+                name=c["name"],
+                description=c.get("description", ""),
+                repeat_days=c["repeat_days"],
+                difficulty=c["difficulty"],
+            )
+            for c in chores
+        ])
+        home_chore_objs = HomeChore.objects.bulk_create([
+            HomeChore(home=membership.home, chore=c) for c in chore_objs
+        ])
+
+    return home_chore_objs
+
+
+# ──────────────────────────────────────────
+# 집안일 메모 수정
+# ──────────────────────────────────────────
+
+
+def update_home_chore_memo(*, user: User, home_chore_id: int, memo: str) -> HomeChore:
+    """집안일 메모를 수정합니다.
+
+    Args:
+        user: 요청한 User 인스턴스.
+        home_chore_id: 수정할 HomeChore PK.
+        memo: 변경할 메모 내용.
+
+    Returns:
+        수정된 HomeChore 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 해당 집안일이 유저의 집에 존재하지 않는 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    try:
+        home_chore = HomeChore.objects.select_related("chore").get(
+            id=home_chore_id, home=membership.home
+        )
+    except HomeChore.DoesNotExist:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    home_chore.memo = memo
+    home_chore.save(update_fields=["memo"])
+    return home_chore

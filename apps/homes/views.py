@@ -8,6 +8,9 @@ from rest_framework.views import APIView
 from apps.homes import selectors, services
 from apps.homes.serializers import (
     ChoreOutputSerializer,
+    ChoreMemoUpdateSerializer,
+    HomeChoreListCreateSerializer,
+    HomeChoreOutputSerializer,
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
     HomeJoinSerializer,
@@ -183,6 +186,61 @@ class HomeTransferAdminView(APIView):
         except services.TransferAdminTargetError as e:
             raise ValidationError({"transfer_admin_target": str(e)}) from e
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HomeChoreListView(APIView):
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 리스트 생성 (관리자 전용)",
+        request=HomeChoreListCreateSerializer,
+        responses={
+            201: HomeChoreOutputSerializer(many=True),
+            400: OpenApiResponse(description="유효성 검사 실패"),
+            404: OpenApiResponse(description="속한 집 없음"),
+        },
+    )
+    def post(self, request: Request) -> Response:
+        """집에 집안일을 추가합니다. 단건 및 복수 생성을 지원합니다."""
+        serializer = HomeChoreListCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            home_chores = services.create_home_chores(
+                user=request.user,
+                chores=serializer.validated_data["chores"],
+            )
+        except services.HomeNotFoundError as e:
+            raise NotFound(str(e)) from e
+
+        return Response(HomeChoreOutputSerializer(home_chores, many=True).data, status=status.HTTP_201_CREATED)
+
+
+class HomeChoreDetailView(APIView):
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 메모 수정",
+        parameters=[OpenApiParameter("home_chore_id", int, OpenApiParameter.PATH, description="집안일 ID")],
+        request=ChoreMemoUpdateSerializer,
+        responses={
+            200: HomeChoreOutputSerializer,
+            404: OpenApiResponse(description="집안일을 찾을 수 없음"),
+        },
+    )
+    def patch(self, request: Request, home_chore_id: int) -> Response:
+        """집안일 메모를 수정합니다."""
+        serializer = ChoreMemoUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            home_chore = services.update_home_chore_memo(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                memo=serializer.validated_data["memo"],
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+
+        return Response(HomeChoreOutputSerializer(home_chore).data)
 
 
 class StarterPackListView(APIView):
