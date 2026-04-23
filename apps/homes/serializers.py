@@ -146,6 +146,12 @@ class ChoreMemoUpdateSerializer(serializers.Serializer):
     memo = serializers.CharField(max_length=200, allow_blank=True)
 
 
+class HomeMembershipSerializer(serializers.Serializer):
+    """집 소속 여부 응답 시리얼라이저."""
+
+    has_home = serializers.BooleanField()
+
+
 class HomeInviteDetailSerializer(serializers.ModelSerializer):
     """초대코드 조회 출력 시리얼라이저."""
 

@@ -14,6 +14,7 @@ from apps.homes.serializers import (
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
     HomeJoinSerializer,
+    HomeMembershipSerializer,
     HomeOutputSerializer,
     ImageIdSerializer,
     StarterPackSerializer,
@@ -96,6 +97,18 @@ class HomeDetailView(APIView):
         except services.HomeHasMembersError as e:
             raise ValidationError({"home_has_members": str(e)}) from e
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HomeMembershipView(APIView):
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 소속 여부 조회",
+        responses={200: HomeMembershipSerializer},
+    )
+    def get(self, request: Request) -> Response:
+        """현재 유저의 집 소속 여부를 반환합니다. 항상 200을 반환합니다."""
+        home = selectors.get_user_home(request.user)
+        return Response({"has_home": home is not None})
 
 
 class HomeInviteView(APIView):
