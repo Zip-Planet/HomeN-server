@@ -127,8 +127,22 @@
 
 ---
 
+### GET /api/v1/homes/mine/membership/
+현재 유저의 집 소속 여부를 반환합니다. 항상 200을 반환합니다. (인증 필요)
+로그인 후 홈 화면과 온보딩(집 생성/초대코드 참여) 화면 분기용으로 사용합니다.
+
+**Response 200**
+```json
+{"has_home": true}
+```
+```json
+{"has_home": false}
+```
+
+---
+
 ### GET /api/v1/homes/mine/
-현재 유저의 집 정보를 반환합니다. `creation_step`으로 재진입 단계를 파악합니다. (인증 필요)
+현재 유저의 집 정보를 반환합니다. (인증 필요)
 
 **Response 200** — 위 POST 응답과 동일 구조
 
