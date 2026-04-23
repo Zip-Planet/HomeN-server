@@ -130,6 +130,28 @@ class TestHomeDetailView:
         assert res.status_code == 404
 
 
+class TestHomeMembershipView:
+    def test_집_있으면_has_home_true(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user)
+        client = auth_client(user)
+
+        res = client.get("/api/v1/homes/mine/membership/")
+
+        assert res.status_code == 200
+        assert res.data["has_home"] is True
+
+    def test_집_없으면_has_home_false(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.get("/api/v1/homes/mine/membership/")
+
+        assert res.status_code == 200
+        assert res.data["has_home"] is False
+
+
 class TestHomeInviteView:
     def test_초대코드_조회_성공(self):
         user = UserFactory()
