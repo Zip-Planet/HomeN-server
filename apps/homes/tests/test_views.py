@@ -121,6 +121,39 @@ class TestHomeDetailView:
         assert res.data["id"] == home.pk
         assert "creation_step" not in res.data
 
+    def test_members_포함_조회(self):
+        admin = UserFactory(name="관리자", profile_image=1)
+        member = UserFactory(name="구성원", profile_image=2)
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        client = auth_client(admin)
+
+        res = client.get("/api/v1/homes/mine/")
+
+        assert res.status_code == 200
+        members = res.data["members"]
+        assert len(members) == 2
+        admin_data = next(m for m in members if m["role"] == HomeMember.Role.ADMIN)
+        member_data = next(m for m in members if m["role"] == HomeMember.Role.MEMBER)
+        assert admin_data["name"] == "관리자"
+        assert admin_data["profile_image"] == 1
+        assert admin_data["role_label"] == "관리자"
+        assert member_data["name"] == "구성원"
+        assert member_data["profile_image"] == 2
+        assert member_data["role_label"] == "구성원"
+
+    def test_members_profile_image_null_허용(self):
+        user = UserFactory(profile_image=None)
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
+        client = auth_client(user)
+
+        res = client.get("/api/v1/homes/mine/")
+
+        assert res.status_code == 200
+        assert res.data["members"][0]["profile_image"] is None
+
     def test_집_없으면_404(self):
         user = UserFactory()
         client = auth_client(user)
