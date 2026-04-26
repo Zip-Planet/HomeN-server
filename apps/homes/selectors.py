@@ -23,7 +23,12 @@ def get_user_home(user: User) -> Home | None:
         유저가 속한 Home 인스턴스 또는 None.
     """
     try:
-        membership = HomeMember.objects.select_related("home").get(user=user)
+        membership = (
+            HomeMember.objects
+            .select_related("home")
+            .prefetch_related("home__members__user")
+            .get(user=user)
+        )
         return membership.home
     except HomeMember.DoesNotExist:
         return None
