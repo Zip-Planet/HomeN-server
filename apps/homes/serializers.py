@@ -36,12 +36,30 @@ class HomeCreateSerializer(serializers.Serializer):
         return value
 
 
+class HomeMemberSerializer(serializers.ModelSerializer):
+    """집 구성원 출력 시리얼라이저."""
+
+    name = serializers.CharField(source="user.name")
+    profile_image = serializers.IntegerField(source="user.profile_image", allow_null=True)
+    role_label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HomeMember
+        fields = ["name", "profile_image", "role", "role_label"]
+
+    def get_role_label(self, obj: HomeMember) -> str:
+        """역할의 표시 이름을 반환합니다."""
+        return obj.get_role_display()
+
+
 class HomeOutputSerializer(serializers.ModelSerializer):
     """집 출력 시리얼라이저."""
 
+    members = HomeMemberSerializer(many=True, read_only=True)
+
     class Meta:
         model = Home
-        fields = ["id", "name", "image", "invite_code", "status", "created_at"]
+        fields = ["id", "name", "image", "invite_code", "status", "created_at", "members"]
 
 
 class StarterPackSerializer(serializers.ModelSerializer):
@@ -69,22 +87,6 @@ class RewardOutputSerializer(serializers.ModelSerializer):
     class Meta:
         model = Reward
         fields = ["id", "name", "goal_point"]
-
-
-class HomeMemberSerializer(serializers.ModelSerializer):
-    """집 구성원 출력 시리얼라이저."""
-
-    name = serializers.CharField(source="user.name")
-    profile_image = serializers.IntegerField(source="user.profile_image", allow_null=True)
-    role_label = serializers.SerializerMethodField()
-
-    class Meta:
-        model = HomeMember
-        fields = ["name", "profile_image", "role", "role_label"]
-
-    def get_role_label(self, obj: HomeMember) -> str:
-        """역할의 표시 이름을 반환합니다."""
-        return obj.get_role_display()
 
 
 class ImageIdSerializer(serializers.Serializer):
