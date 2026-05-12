@@ -24,6 +24,42 @@ from rest_framework import serializers
 from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, StarterPack
 
 
+# ── 출력 매핑 (난이도 → 포인트 / 3단계 라벨, 요일 → 한글) ─────────────────────
+#
+# 디자인이 노출하는 표현은 5단계 난이도와 다르다.
+# - 난이도(1~5) 는 화면에서 3단계 라벨(쉬움/중간/어려움) 로 묶여 보이며,
+# - 포인트는 난이도에 1:1 로 묶인 고정 값이다 ("포인트는 난이도에 따라 자동 고정돼요").
+# - 요일은 정수 배열(0=월 ~ 6=일) 외에 한글 라벨을 함께 노출한다.
+# 본 매핑은 응답 직렬화 시에만 사용한다 — Chore 모델 자체에는 보관하지 않는다.
+
+_POINT_BY_DIFFICULTY: dict[int, int] = {1: 40, 2: 80, 3: 120, 4: 160, 5: 200}
+_DIFFICULTY_LABEL_BY_DIFFICULTY: dict[int, str] = {
+    1: "쉬움",
+    2: "쉬움",
+    3: "중간",
+    4: "중간",
+    5: "어려움",
+}
+
+
+def _difficulty_label(value: int) -> str:
+    return _DIFFICULTY_LABEL_BY_DIFFICULTY.get(value, "")
+
+
+def _point_for_difficulty(value: int) -> int:
+    return _POINT_BY_DIFFICULTY.get(value, 0)
+
+
+def _weekday_labels(repeat_days: list[int]) -> list[str]:
+    labels = []
+    for day in repeat_days:
+        try:
+            labels.append(Chore.Weekday(day).label)
+        except ValueError:
+            continue
+    return labels
+
+
 # ── 집 생성 ──────────────────────────────────────────────────────────────────
 
 
@@ -208,17 +244,26 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
     """집안일 마스터(`Chore`) 응답.
 
     스타터팩 미리보기 등 `HomeChore` 가 아직 만들어지지 않은 시점에 사용된다.
+
+    난이도/포인트/요일 표현 규칙:
+    - `difficulty_label`: 1~2='쉬움', 3~4='중간', 5='어려움' (3단계 매핑).
+    - `point`: 1=40, 2=80, 3=120, 4=160, 5=200 (난이도 1:1 고정).
+    - `repeat_days_label`: `repeat_days` 의 한글 라벨 배열 (예: [0,5] → ["월","토"]).
     """
 
-    difficulty_label = serializers.CharField(
-        source="get_difficulty_display",
-        read_only=True,
-        help_text="난이도 한국어 표시 (예: '중', '상').",
-    )
     category_label = serializers.CharField(
         source="get_category_display",
         read_only=True,
         help_text="카테고리 한국어 표시 (예: '청소', '주방').",
+    )
+    difficulty_label = serializers.SerializerMethodField(
+        help_text="난이도 화면 라벨 (3단계 매핑): 1~2='쉬움', 3~4='중간', 5='어려움'.",
+    )
+    point = serializers.SerializerMethodField(
+        help_text="난이도 고정 포인트: 1=40, 2=80, 3=120, 4=160, 5=200.",
+    )
+    repeat_days_label = serializers.SerializerMethodField(
+        help_text="반복 요일 한글 라벨 배열 (예: ['월','토']).",
     )
 
     class Meta:
@@ -230,8 +275,10 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "repeat_days",
+            "repeat_days_label",
             "difficulty",
             "difficulty_label",
+            "point",
         ]
         extra_kwargs = {
             "id": {"help_text": "집안일 마스터 PK."},
@@ -241,6 +288,15 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
             "repeat_days": {"help_text": "반복 요일 정수 배열 (0=월 ~ 6=일)."},
             "difficulty": {"help_text": "난이도 enum 정수 (1=하 ~ 5=상)."},
         }
+
+    def get_difficulty_label(self, obj: Chore) -> str:
+        return _difficulty_label(obj.difficulty)
+
+    def get_point(self, obj: Chore) -> int:
+        return _point_for_difficulty(obj.difficulty)
+
+    def get_repeat_days_label(self, obj: Chore) -> list[str]:
+        return _weekday_labels(obj.repeat_days)
 
 
 class RewardOutputSerializer(serializers.ModelSerializer):
@@ -381,6 +437,8 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
 
     `Chore` 의 마스터 정보(이름/카테고리 등)와 `HomeChore` 의 인스턴스 정보(`memo`,
     PK 등)를 평탄화해 한 객체로 응답한다.
+
+    난이도/포인트/요일 표현은 `ChoreOutputSerializer` 와 동일한 매핑을 사용한다.
     """
 
     category = serializers.IntegerField(source="chore.category", help_text="카테고리 enum 정수.")
@@ -388,8 +446,16 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="chore.name", help_text="집안일 제목.")
     description = serializers.CharField(source="chore.description", help_text="집안일 설명.")
     repeat_days = serializers.ListField(source="chore.repeat_days", help_text="반복 요일 정수 배열.")
+    repeat_days_label = serializers.SerializerMethodField(
+        help_text="반복 요일 한글 라벨 배열 (예: ['월','토']).",
+    )
     difficulty = serializers.IntegerField(source="chore.difficulty", help_text="난이도 enum 정수.")
-    difficulty_label = serializers.CharField(source="chore.get_difficulty_display", help_text="난이도 한국어.")
+    difficulty_label = serializers.SerializerMethodField(
+        help_text="난이도 화면 라벨 (3단계 매핑): 1~2='쉬움', 3~4='중간', 5='어려움'.",
+    )
+    point = serializers.SerializerMethodField(
+        help_text="난이도 고정 포인트: 1=40, 2=80, 3=120, 4=160, 5=200.",
+    )
 
     class Meta:
         model = HomeChore
@@ -400,14 +466,25 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "repeat_days",
+            "repeat_days_label",
             "difficulty",
             "difficulty_label",
+            "point",
             "memo",
         ]
         extra_kwargs = {
             "id": {"help_text": "HomeChore PK — 메모 수정 등에 사용."},
             "memo": {"help_text": "집안일 인스턴스 단위 메모 (최대 200자, 빈 문자열 가능)."},
         }
+
+    def get_difficulty_label(self, obj: HomeChore) -> str:
+        return _difficulty_label(obj.chore.difficulty)
+
+    def get_point(self, obj: HomeChore) -> int:
+        return _point_for_difficulty(obj.chore.difficulty)
+
+    def get_repeat_days_label(self, obj: HomeChore) -> list[str]:
+        return _weekday_labels(obj.chore.repeat_days)
 
 
 @extend_schema_serializer(
