@@ -3,7 +3,13 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType
-from apps.homes.tests.factories import ChoreFactory, HomeChoreFactory, HomeFactory, HomeMemberFactory
+from apps.homes.tests.factories import (
+    ChoreFactory,
+    HomeChoreFactory,
+    HomeFactory,
+    HomeMemberFactory,
+    StarterPackFactory,
+)
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -106,6 +112,69 @@ class TestHomeCreateView:
         )
 
         assert res.status_code == 400
+
+    def test_스타터팩_적용으로_생성_성공(self):
+        user = UserFactory()
+        pack = StarterPackFactory()
+        ChoreFactory(starter_pack=pack, name="청소기 돌리기")
+        ChoreFactory(starter_pack=pack, name="설거지")
+        client = auth_client(user)
+
+        res = client.post(
+            self.url,
+            {
+                "name": "우리집",
+                "image_id": HomeImageType.TYPE_1,
+                "starter_pack_id": pack.id,
+                "chores": [],
+                "rewards": [],
+            },
+            format="json",
+        )
+
+        assert res.status_code == 201
+        home = Home.objects.get(id=res.data["id"])
+        assert HomeChore.objects.filter(home=home).count() == 2
+
+    def test_스타터팩_id_와_chores_동시_지정_400(self):
+        user = UserFactory()
+        pack = StarterPackFactory()
+        client = auth_client(user)
+
+        res = client.post(
+            self.url,
+            {
+                "name": "우리집",
+                "image_id": HomeImageType.TYPE_1,
+                "starter_pack_id": pack.id,
+                "chores": [
+                    {"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW},
+                ],
+                "rewards": [],
+            },
+            format="json",
+        )
+
+        assert res.status_code == 400
+        assert "ambiguous_chore_input" in res.data
+
+    def test_잘못된_starter_pack_id_404(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.post(
+            self.url,
+            {
+                "name": "우리집",
+                "image_id": HomeImageType.TYPE_1,
+                "starter_pack_id": 99999,
+                "chores": [],
+                "rewards": [],
+            },
+            format="json",
+        )
+
+        assert res.status_code == 404
 
 
 class TestHomeDetailView:
@@ -478,6 +547,75 @@ class TestHomeChoreListView:
         res = APIClient().post(self.url, {}, format="json")
 
         assert res.status_code == 401
+
+    def test_스타터팩_적용_성공(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        ChoreFactory(starter_pack=pack, name="청소기 돌리기")
+        ChoreFactory(starter_pack=pack, name="설거지")
+        client = auth_client(user)
+
+        res = client.post(self.url, {"starter_pack_id": pack.id}, format="json")
+
+        assert res.status_code == 201
+        assert len(res.data) == 2
+        assert HomeChore.objects.filter(home=home).count() == 2
+
+    def test_스타터팩_재적용은_멱등(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        ChoreFactory(starter_pack=pack)
+        client = auth_client(user)
+
+        first = client.post(self.url, {"starter_pack_id": pack.id}, format="json")
+        second = client.post(self.url, {"starter_pack_id": pack.id}, format="json")
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        # 두 번째 호출은 새로 생긴 게 없음
+        assert second.data == []
+        assert HomeChore.objects.filter(home=home).count() == 1
+
+    def test_starter_pack_id_와_chores_동시_지정_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        client = auth_client(user)
+        payload = {
+            "starter_pack_id": pack.id,
+            "chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}],
+        }
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 400
+        assert "ambiguous_chore_input" in res.data
+
+    def test_둘_다_누락_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.post(self.url, {}, format="json")
+
+        assert res.status_code == 400
+        assert "missing_chore_input" in res.data
+
+    def test_잘못된_starter_pack_id_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.post(self.url, {"starter_pack_id": 99999}, format="json")
+
+        assert res.status_code == 404
 
 
 class TestHomeChoreListViewGet:

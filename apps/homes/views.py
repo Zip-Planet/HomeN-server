@@ -79,14 +79,17 @@ class HomeCreateView(APIView):
         tags=["Homes"],
         summary="집 생성 (호출자를 관리자로 등록)",
         description=(
-            "집을 생성하고 호출자를 관리자로 자동 등록한다. 집안일과 리워드를 함께 등록할 수 있다.\n\n"
+            "집을 생성하고 호출자를 관리자로 자동 등록한다. 집안일은 **스타터팩 ID 또는 커스텀 배열 중 하나** 만 받으며, 둘 다 비어 있어도 된다 (집만 생성).\n\n"
             "**검증**\n"
             "- 이름: 한글·영문·숫자·공백, 1~10자. 공백 단독 불가.\n"
             "- `image_id`: `HomeImageType` choice 정수 (1~8) 중 하나.\n"
-            "- `chores`/`rewards`: 빈 배열이면 부속 생성을 건너뛴다.\n\n"
+            "- `starter_pack_id`: 스타터팩 PK (선택). 지정 시 해당 팩의 chore 가 일괄 연결.\n"
+            "- `chores`: 사용자 정의 집안일 배열. `starter_pack_id` 와 동시 지정 불가.\n"
+            "- `rewards`: 빈 배열이면 부속 생성을 건너뛴다 (집안일 입력과 독립).\n\n"
             "**에러**\n"
             "- 400 `already_has_home`: 이미 다른 집에 속해 있음 (먼저 나가야 함).\n"
-            "- 400: 입력 유효성 실패.\n"
+            "- 400 `ambiguous_chore_input`: `starter_pack_id` 와 `chores` 동시 지정.\n"
+            "- 404: `starter_pack_id` 에 해당하는 chore 가 없음.\n"
         ),
         request=HomeCreateSerializer,
         responses={
@@ -127,9 +130,14 @@ class HomeCreateView(APIView):
                 image_id=data["image_id"],
                 chores=data["chores"],
                 rewards=data["rewards"],
+                starter_pack_id=data.get("starter_pack_id"),
             )
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
+        except services.AmbiguousChoreInputError as e:
+            raise ValidationError({"ambiguous_chore_input": str(e)}) from e
+        except services.StarterPackNotFoundError as e:
+            raise NotFound(str(e)) from e
 
         return Response(HomeOutputSerializer(home).data, status=status.HTTP_201_CREATED)
 
@@ -411,27 +419,32 @@ class HomeChoreListView(APIView):
 
     @extend_schema(
         tags=["Homes"],
-        summary="집안일 리스트 추가 (관리자 전용)",
+        summary="집안일 추가 (스타터팩 또는 커스텀)",
         description=(
-            "현재 유저가 관리자인 집에 집안일을 추가한다.\n\n"
-            "- 입력은 항상 `chores` 배열로 받는다 (단건이면 길이 1).\n"
-            "- 응답도 항상 배열이며, 각 원소는 새로 생성된 `HomeChore` 의 응답 표현.\n"
-            "- 같은 마스터 `Chore` 가 같은 집에 중복으로 배정되지 않도록 unique 제약이 있다.\n"
+            "현재 유저의 집에 집안일을 추가한다. 입력은 다음 둘 중 정확히 하나:\n\n"
+            "- `starter_pack_id`: 스타터팩의 chore 일괄 연결. 동일 (home, chore) 가 이미 있으면 skip — 멱등.\n"
+            "- `chores`: 사용자 정의 chore 배열. 단건도 길이 1 배열로.\n\n"
+            "- 응답은 새로 생성된 `HomeChore` 의 배열 (스타터팩 적용 시 skip 된 항목은 제외).\n"
+            "- 같은 마스터 `Chore` 가 같은 집에 중복 배정되지 않도록 unique 제약이 있다.\n"
         ),
         request=HomeChoreListCreateSerializer,
         responses={
             201: OpenApiResponse(
                 response=HomeChoreOutputSerializer(many=True),
-                description="생성된 집안일 배열.",
+                description="생성된 집안일 배열 (스타터팩 적용 시 신규로 추가된 것만).",
             ),
-            400: OpenApiResponse(description="유효성 검사 실패 또는 중복 배정."),
+            400: OpenApiResponse(description="유효성 검사 실패 / 입력 분기 오류 (`ambiguous_chore_input`, `missing_chore_input`)."),
             401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="관리자만 등록 가능."),
-            404: OpenApiResponse(description="속한 집 없음."),
+            404: OpenApiResponse(description="속한 집 없음 또는 `starter_pack_id` 에 해당하는 chore 없음."),
         },
         examples=[
             OpenApiExample(
-                "단건 등록",
+                "스타터팩 적용",
+                value={"starter_pack_id": 1},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "커스텀 단건",
                 value={
                     "chores": [
                         {
@@ -450,13 +463,23 @@ class HomeChoreListView(APIView):
     def post(self, request: Request) -> Response:
         serializer = HomeChoreListCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        starter_pack_id = data.get("starter_pack_id")
 
         try:
-            home_chores = services.create_home_chores(
-                user=request.user,
-                chores=serializer.validated_data["chores"],
-            )
+            if starter_pack_id is not None:
+                home_chores = services.apply_starter_pack(
+                    user=request.user,
+                    starter_pack_id=starter_pack_id,
+                )
+            else:
+                home_chores = services.create_home_chores(
+                    user=request.user,
+                    chores=data["chores"],
+                )
         except services.HomeNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.StarterPackNotFoundError as e:
             raise NotFound(str(e)) from e
 
         return Response(HomeChoreOutputSerializer(home_chores, many=True).data, status=status.HTTP_201_CREATED)

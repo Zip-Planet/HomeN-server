@@ -66,8 +66,20 @@ def _weekday_labels(repeat_days: list[int]) -> list[str]:
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
-            "집 + 집안일 + 리워드",
-            summary="생성 시 집안일·리워드를 함께 등록하는 전형적 케이스",
+            "스타터팩 적용 + 리워드",
+            summary="스타터팩 적용 시점 (chores 는 빈 배열)",
+            value={
+                "name": "우리집",
+                "image_id": 1,
+                "starter_pack_id": 1,
+                "chores": [],
+                "rewards": [{"name": "치킨 한 마리", "goal_point": 50}],
+            },
+            request_only=True,
+        ),
+        OpenApiExample(
+            "커스텀 집안일 + 리워드",
+            summary="스타터팩 대신 사용자 정의 chore 배열 사용",
             value={
                 "name": "우리집",
                 "image_id": 1,
@@ -95,8 +107,11 @@ def _weekday_labels(repeat_days: list[int]) -> list[str]:
 class HomeCreateSerializer(serializers.Serializer):
     """집 생성 요청.
 
-    `chores` 와 `rewards` 는 선택값이며 빈 리스트로 보내면 집만 생성한다.
-    내부 nested 시리얼라이저는 본 시리얼라이저 안에서만 사용된다.
+    집안일 입력은 다음 둘 중 **하나만** 허용한다 (둘 다 비어 있어도 됨):
+    - `starter_pack_id`: 스타터팩 ID — 해당 팩의 chore 들이 일괄로 HomeChore 로 연결.
+    - `chores`: 사용자 정의 chore 정의 배열.
+
+    둘 다 지정되면 400 (`ambiguous_chore_input`). 리워드는 별개로 동시 등록 가능.
     """
 
     class ChoreInputSerializer(serializers.Serializer):
@@ -137,7 +152,13 @@ class HomeCreateSerializer(serializers.Serializer):
         choices=HomeImageType.choices,
         help_text="집 이미지 enum 값 (1~8). `/homes/images/` 의 응답 중 하나.",
     )
-    chores = ChoreInputSerializer(many=True, default=list, help_text="함께 등록할 집안일 목록 (선택).")
+    starter_pack_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들이 일괄 연결되며 `chores` 와 동시 사용 불가.",
+    )
+    chores = ChoreInputSerializer(many=True, default=list, help_text="사용자 정의 집안일 목록 (선택, `starter_pack_id` 와 동시 사용 불가).")
     rewards = RewardInputSerializer(many=True, default=list, help_text="함께 등록할 리워드 목록 (선택).")
 
     def validate_name(self, value: str) -> str:
@@ -147,6 +168,14 @@ class HomeCreateSerializer(serializers.Serializer):
         if value.strip() == "":
             raise serializers.ValidationError("집 이름을 입력해 주세요.")
         return value
+
+    def validate(self, attrs: dict) -> dict:
+        """`starter_pack_id` 와 `chores` 는 동시에 지정할 수 없다."""
+        if attrs.get("starter_pack_id") is not None and attrs.get("chores"):
+            raise serializers.ValidationError(
+                {"ambiguous_chore_input": "starter_pack_id 와 chores 는 동시에 지정할 수 없습니다."}
+            )
+        return attrs
 
 
 # ── 집 조회 / 응답 ────────────────────────────────────────────────────────────
@@ -400,7 +429,13 @@ class HomeChoreCreateSerializer(serializers.Serializer):
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
-            "복수 등록",
+            "스타터팩 적용",
+            summary="스타터팩 ID 만 보내 일괄 적용",
+            value={"starter_pack_id": 1},
+            request_only=True,
+        ),
+        OpenApiExample(
+            "커스텀 복수 등록",
             value={
                 "chores": [
                     {
@@ -420,16 +455,43 @@ class HomeChoreCreateSerializer(serializers.Serializer):
                 ]
             },
             request_only=True,
-        )
+        ),
     ]
 )
 class HomeChoreListCreateSerializer(serializers.Serializer):
-    """집안일 리스트 생성 요청.
+    """집안일 추가 요청.
 
-    단건 등록도 길이 1 의 `chores` 배열로 보낸다 — 응답은 동일하게 배열.
+    다음 둘 중 **정확히 하나** 만 지정한다:
+    - `starter_pack_id`: 스타터팩 일괄 적용 (기존 chore 와 중복되면 skip — 멱등).
+    - `chores`: 사용자 정의 chore 배열 (단건도 길이 1 배열).
+
+    둘 다 지정되거나 둘 다 비어 있으면 400.
     """
 
-    chores = HomeChoreCreateSerializer(many=True, help_text="추가할 집안일 목록.")
+    starter_pack_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="적용할 스타터팩 PK. `chores` 와 동시 사용 불가.",
+    )
+    chores = HomeChoreCreateSerializer(
+        many=True,
+        default=list,
+        help_text="추가할 사용자 정의 집안일 목록. `starter_pack_id` 와 동시 사용 불가.",
+    )
+
+    def validate(self, attrs: dict) -> dict:
+        starter_pack_id = attrs.get("starter_pack_id")
+        chores = attrs.get("chores") or []
+        if starter_pack_id is not None and chores:
+            raise serializers.ValidationError(
+                {"ambiguous_chore_input": "starter_pack_id 와 chores 는 동시에 지정할 수 없습니다."}
+            )
+        if starter_pack_id is None and not chores:
+            raise serializers.ValidationError(
+                {"missing_chore_input": "starter_pack_id 또는 chores 중 하나는 반드시 지정해야 합니다."}
+            )
+        return attrs
 
 
 class HomeChoreOutputSerializer(serializers.ModelSerializer):
