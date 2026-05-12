@@ -480,6 +480,87 @@ class TestHomeChoreListView:
         assert res.status_code == 401
 
 
+class TestHomeChoreListViewGet:
+    url = "/api/v1/homes/mine/chores/"
+
+    def test_집안일_없으면_빈_배열_200(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        assert res.data == []
+
+    def test_내_집_집안일만_노출(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        mine_chore = ChoreFactory(name="내집 청소")
+        HomeChoreFactory(home=home, chore=mine_chore)
+
+        other_home = HomeFactory()
+        other_chore = ChoreFactory(name="남의집 청소")
+        HomeChoreFactory(home=other_home, chore=other_chore)
+
+        client = auth_client(user)
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        assert len(res.data) == 1
+        assert res.data[0]["name"] == "내집 청소"
+
+    def test_pk_오름차순_정렬(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        c1 = ChoreFactory(name="first")
+        c2 = ChoreFactory(name="second")
+        c3 = ChoreFactory(name="third")
+        # 일부러 역순으로 부착
+        HomeChoreFactory(home=home, chore=c3)
+        HomeChoreFactory(home=home, chore=c2)
+        HomeChoreFactory(home=home, chore=c1)
+
+        client = auth_client(user)
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        ids = [row["id"] for row in res.data]
+        assert ids == sorted(ids), f"PK 오름차순이어야 함: {ids}"
+
+    def test_응답에_point_difficulty_label_repeat_days_label_포함(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(repeat_days=[0, 5], difficulty=Chore.Difficulty.MEDIUM_HIGH)  # 중상 → 중간 / 160P
+        HomeChoreFactory(home=home, chore=chore)
+
+        client = auth_client(user)
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        row = res.data[0]
+        assert row["difficulty_label"] == "중간"
+        assert row["point"] == 160
+        assert row["repeat_days_label"] == ["월", "토"]
+
+    def test_속한_집_없으면_404(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.get(self.url)
+
+        assert res.status_code == 404
+
+    def test_미인증_401(self):
+        res = APIClient().get(self.url)
+
+        assert res.status_code == 401
+
+
 class TestHomeChoreDetailView:
     def test_메모_수정_성공(self):
         user = UserFactory()
