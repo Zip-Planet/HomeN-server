@@ -26,8 +26,10 @@ from rest_framework.views import APIView
 from apps.homes import selectors, services
 from apps.homes.serializers import (
     ChoreOutputSerializer,
-    ChoreMemoUpdateSerializer,
     HomeChoreListCreateSerializer,
+    HomeChoreNoteCreateSerializer,
+    HomeChoreNoteOutputSerializer,
+    HomeChoreNoteUpdateSerializer,
     HomeChoreOutputSerializer,
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
@@ -485,53 +487,163 @@ class HomeChoreListView(APIView):
         return Response(HomeChoreOutputSerializer(home_chores, many=True).data, status=status.HTTP_201_CREATED)
 
 
-class HomeChoreDetailView(APIView):
-    """집안일 단건 — 메모 수정.
+# ── 집안일 메모 (1:N) ──────────────────────────────────────────────────────────
 
-    현재는 PATCH 만 노출하며, 메모만 변경 가능하다 (이름/카테고리 등 마스터는 별도 흐름).
+
+class HomeChoreNoteListView(APIView):
+    """집안일 메모 목록 조회 / 작성.
+
+    Figma \"집안일 상세\" 의 메모 섹션이 다중 작성자 메모를 노출하므로 1:N 으로
+    설계되어 있다.
     """
 
     @extend_schema(
         tags=["Homes"],
-        summary="집안일 메모 수정",
+        summary="집안일 메모 목록 조회",
         description=(
-            "지정한 집안일의 `memo` 만 변경한다.\n\n"
-            "- 빈 문자열을 보내면 메모를 비운다 (필수 필드는 아님).\n"
-            "- 다른 집의 집안일을 지정하면 404 (`HomeChoreNotFoundError`).\n"
+            "지정한 집안일의 메모 목록을 PK 오름차순으로 반환한다.\n\n"
+            "- 본인 집의 집안일이 아니면 404.\n"
+            "- 메모 0개여도 200 + 빈 배열.\n"
         ),
         parameters=[
             OpenApiParameter(
-                "home_chore_id",
-                int,
-                OpenApiParameter.PATH,
-                description="대상 `HomeChore` PK.",
+                "home_chore_id", int, OpenApiParameter.PATH, description="대상 HomeChore PK."
             ),
         ],
-        request=ChoreMemoUpdateSerializer,
         responses={
-            200: OpenApiResponse(response=HomeChoreOutputSerializer, description="수정된 집안일."),
+            200: OpenApiResponse(
+                response=HomeChoreNoteOutputSerializer(many=True),
+                description="메모 배열 (작성자 정보 포함).",
+            ),
             401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="집안일을 찾을 수 없거나 다른 집 소유."),
+            404: OpenApiResponse(description="해당 집안일이 본인 집에 없음."),
+        },
+    )
+    def get(self, request: Request, home_chore_id: int) -> Response:
+        notes = selectors.get_home_chore_notes(request.user, home_chore_id)
+        if notes is None:
+            raise NotFound("집안일을 찾을 수 없습니다.")
+        return Response(HomeChoreNoteOutputSerializer(notes, many=True).data)
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 메모 작성",
+        description=(
+            "지정한 집안일에 메모를 새로 작성한다.\n\n"
+            "- 작성자(`author`) 는 호출자로 자동 설정.\n"
+            "- 본인 집의 집안일이 아니면 404.\n"
+        ),
+        parameters=[
+            OpenApiParameter(
+                "home_chore_id", int, OpenApiParameter.PATH, description="대상 HomeChore PK."
+            ),
+        ],
+        request=HomeChoreNoteCreateSerializer,
+        responses={
+            201: OpenApiResponse(
+                response=HomeChoreNoteOutputSerializer, description="생성된 메모."
+            ),
+            400: OpenApiResponse(description="유효성 검사 실패 (`content` 길이 초과 등)."),
+            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            404: OpenApiResponse(description="해당 집안일이 본인 집에 없음."),
         },
         examples=[
-            OpenApiExample("메모 입력", value={"memo": "다음 주는 청소 패스"}, request_only=True),
-            OpenApiExample("메모 비우기", value={"memo": ""}, request_only=True),
+            OpenApiExample("메모 작성", value={"content": "락스 사용 시 환기 필수"}, request_only=True),
         ],
     )
-    def patch(self, request: Request, home_chore_id: int) -> Response:
-        serializer = ChoreMemoUpdateSerializer(data=request.data)
+    def post(self, request: Request, home_chore_id: int) -> Response:
+        serializer = HomeChoreNoteCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         try:
-            home_chore = services.update_home_chore_memo(
+            note = services.create_home_chore_note(
                 user=request.user,
                 home_chore_id=home_chore_id,
-                memo=serializer.validated_data["memo"],
+                content=serializer.validated_data["content"],
             )
         except services.HomeChoreNotFoundError as e:
             raise NotFound(str(e)) from e
 
-        return Response(HomeChoreOutputSerializer(home_chore).data)
+        return Response(HomeChoreNoteOutputSerializer(note).data, status=status.HTTP_201_CREATED)
+
+
+class HomeChoreNoteDetailView(APIView):
+    """집안일 메모 수정 / 삭제 (작성자 전용)."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 메모 수정 (작성자 전용)",
+        description=(
+            "지정한 메모의 본문을 변경한다. **본인이 작성한 메모만** 수정 가능 (위반 시 403).\n"
+        ),
+        parameters=[
+            OpenApiParameter(
+                "home_chore_id", int, OpenApiParameter.PATH, description="대상 HomeChore PK."
+            ),
+            OpenApiParameter("note_id", int, OpenApiParameter.PATH, description="대상 메모 PK."),
+        ],
+        request=HomeChoreNoteUpdateSerializer,
+        responses={
+            200: OpenApiResponse(response=HomeChoreNoteOutputSerializer, description="수정된 메모."),
+            400: OpenApiResponse(description="유효성 검사 실패."),
+            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            403: OpenApiResponse(description="작성자만 수정 가능."),
+            404: OpenApiResponse(description="해당 집안일 또는 메모를 찾을 수 없음."),
+        },
+        examples=[OpenApiExample("메모 수정", value={"content": "수정된 내용"}, request_only=True)],
+    )
+    def patch(self, request: Request, home_chore_id: int, note_id: int) -> Response:
+        serializer = HomeChoreNoteUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            note = services.update_home_chore_note(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                note_id=note_id,
+                content=serializer.validated_data["content"],
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.HomeChoreNoteNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.NotNoteAuthorError as e:
+            raise PermissionDenied(str(e)) from e
+
+        return Response(HomeChoreNoteOutputSerializer(note).data)
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 메모 삭제 (작성자 전용)",
+        description="**본인이 작성한 메모만** 삭제 가능 (위반 시 403).",
+        parameters=[
+            OpenApiParameter(
+                "home_chore_id", int, OpenApiParameter.PATH, description="대상 HomeChore PK."
+            ),
+            OpenApiParameter("note_id", int, OpenApiParameter.PATH, description="대상 메모 PK."),
+        ],
+        responses={
+            204: OpenApiResponse(description="삭제 완료 — 응답 본문 없음."),
+            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            403: OpenApiResponse(description="작성자만 삭제 가능."),
+            404: OpenApiResponse(description="해당 집안일 또는 메모를 찾을 수 없음."),
+        },
+    )
+    def delete(self, request: Request, home_chore_id: int, note_id: int) -> Response:
+        try:
+            services.delete_home_chore_note(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                note_id=note_id,
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.HomeChoreNoteNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.NotNoteAuthorError as e:
+            raise PermissionDenied(str(e)) from e
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ── 스타터팩 ──────────────────────────────────────────────────────────────────

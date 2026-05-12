@@ -21,7 +21,17 @@ import re
 from drf_spectacular.utils import OpenApiExample, extend_schema_serializer
 from rest_framework import serializers
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, StarterPack
+from apps.homes.models import (
+    Chore,
+    ChoreCategory,
+    Home,
+    HomeChore,
+    HomeChoreNote,
+    HomeMember,
+    HomeImageType,
+    Reward,
+    StarterPack,
+)
 
 
 # ── 출력 매핑 (난이도 → 포인트 / 3단계 라벨, 요일 → 한글) ─────────────────────
@@ -497,8 +507,11 @@ class HomeChoreListCreateSerializer(serializers.Serializer):
 class HomeChoreOutputSerializer(serializers.ModelSerializer):
     """집에 배정된 집안일(`HomeChore`) 응답.
 
-    `Chore` 의 마스터 정보(이름/카테고리 등)와 `HomeChore` 의 인스턴스 정보(`memo`,
-    PK 등)를 평탄화해 한 객체로 응답한다.
+    `Chore` 의 마스터 정보(이름/카테고리 등) 와 `HomeChore` 의 인스턴스 정보(PK 등)
+    를 평탄화해 한 객체로 응답한다.
+
+    메모는 본 응답에 포함되지 않는다 — 다중 작성자/수정 가능 메모는 별도 1:N 모델
+    (`HomeChoreNote`) 로 노출되며 `GET /homes/mine/chores/{id}/notes/` 로 조회한다.
 
     난이도/포인트/요일 표현은 `ChoreOutputSerializer` 와 동일한 매핑을 사용한다.
     """
@@ -532,11 +545,9 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
             "difficulty",
             "difficulty_label",
             "point",
-            "memo",
         ]
         extra_kwargs = {
-            "id": {"help_text": "HomeChore PK — 메모 수정 등에 사용."},
-            "memo": {"help_text": "집안일 인스턴스 단위 메모 (최대 200자, 빈 문자열 가능)."},
+            "id": {"help_text": "HomeChore PK — 메모 컬렉션 경로의 부모 식별자."},
         }
 
     def get_difficulty_label(self, obj: HomeChore) -> str:
@@ -549,19 +560,75 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
         return _weekday_labels(obj.chore.repeat_days)
 
 
+# ── 집안일 메모 (1:N) ──────────────────────────────────────────────────────────
+
+
 @extend_schema_serializer(
     examples=[
-        OpenApiExample("메모 입력", value={"memo": "주방 세제 떨어짐 — 사 와야 함"}, request_only=True),
-        OpenApiExample("메모 비우기", value={"memo": ""}, request_only=True),
+        OpenApiExample(
+            "메모 응답",
+            value={
+                "id": 12,
+                "author": {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "홍길동", "profile_image": 3},
+                "content": "주방 세제 떨어짐 — 사 와야 함",
+                "created_at": "2026-05-13T12:00:00Z",
+                "updated_at": "2026-05-13T12:00:00Z",
+            },
+            response_only=True,
+        ),
     ]
 )
-class ChoreMemoUpdateSerializer(serializers.Serializer):
-    """집안일 메모 수정 요청."""
+class HomeChoreNoteOutputSerializer(serializers.ModelSerializer):
+    """집안일 메모 한 건의 응답.
 
-    memo = serializers.CharField(
+    `author` 는 닉네임 + 프로필 이미지 + uid 를 내려 FE 가 작성자 표시·본인 여부
+    판별에 사용한다 (수정·삭제 버튼 권한 분기).
+    """
+
+    author = serializers.SerializerMethodField(
+        help_text="작성자 정보 (uid / name / profile_image).",
+    )
+
+    class Meta:
+        model = HomeChoreNote
+        fields = ["id", "author", "content", "created_at", "updated_at"]
+        extra_kwargs = {
+            "id": {"help_text": "HomeChoreNote PK."},
+            "content": {"help_text": "메모 본문 (1~200자, 빈 문자열 불가)."},
+            "created_at": {"help_text": "생성 일시 (ISO 8601)."},
+            "updated_at": {"help_text": "최종 수정 일시 (ISO 8601)."},
+        }
+
+    def get_author(self, obj: HomeChoreNote) -> dict:
+        author = obj.author
+        return {
+            "uid": str(author.uid),
+            "name": author.name,
+            "profile_image": author.profile_image,
+        }
+
+
+@extend_schema_serializer(
+    examples=[OpenApiExample("메모 작성", value={"content": "락스 사용 시 환기 필수"}, request_only=True)]
+)
+class HomeChoreNoteCreateSerializer(serializers.Serializer):
+    """집안일 메모 작성 요청."""
+
+    content = serializers.CharField(
         max_length=200,
-        allow_blank=True,
-        help_text="새 메모 (최대 200자). 빈 문자열을 보내면 메모를 비운다.",
+        help_text="메모 본문 (1~200자, 빈 문자열 불가).",
+    )
+
+
+@extend_schema_serializer(
+    examples=[OpenApiExample("메모 수정", value={"content": "수정된 내용"}, request_only=True)]
+)
+class HomeChoreNoteUpdateSerializer(serializers.Serializer):
+    """집안일 메모 수정 요청 (작성자만 가능)."""
+
+    content = serializers.CharField(
+        max_length=200,
+        help_text="새 메모 본문 (1~200자, 빈 문자열 불가).",
     )
 
 
