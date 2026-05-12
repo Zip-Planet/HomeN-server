@@ -93,14 +93,38 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "HomeN API",
-    "DESCRIPTION": "HomeN 서비스 REST API 명세",
+    "DESCRIPTION": (
+        "HomeN 서비스 REST API 명세.\n\n"
+        "## 인증\n"
+        "- 모든 보호된 엔드포인트는 `Authorization: Bearer <access_token>` 헤더를 요구한다.\n"
+        "- access 토큰은 카카오/애플 소셜 로그인으로 발급한다 (`/api/v1/auth/kakao/`, `/api/v1/auth/apple/`).\n"
+        "- access 만료 시 `/api/v1/auth/token/refresh/` 로 갱신, 로그아웃 시 `/api/v1/auth/logout/` 으로 폐기.\n\n"
+        "## 도메인 컨텍스트\n"
+        "- **Auth / Users**: 소셜 로그인, 본인 프로필 관리, 회원 탈퇴.\n"
+        "- **Homes**: 집 생성·조회·삭제, 초대/참여/나가기, 관리자 양도, 집안일 추가·메모 수정.\n"
+        "- **StarterPacks**: 사전 정의된 집안일 프리셋 목록 및 미리보기.\n\n"
+        "## 규칙\n"
+        "- 한 유저는 단 하나의 집에만 속한다.\n"
+        "- 집당 관리자는 1명. 관리자만 집 삭제·집안일 등록·양도 가능.\n"
+        "- 관리자는 직접 탈퇴/나가기가 불가하며, 양도 또는 집 삭제 후 가능.\n"
+    ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SECURITY": [{"BearerAuth": []}],
+    "TAGS": [
+        {"name": "Auth", "description": "소셜 로그인 (Kakao/Apple), 로그아웃, 액세스 토큰 갱신."},
+        {"name": "Users", "description": "본인 프로필 조회·수정·탈퇴, 프로필 이미지 프리셋."},
+        {"name": "Homes", "description": "집 CRUD, 초대 / 참여 / 나가기, 관리자 양도, 집안일 관리."},
+        {"name": "StarterPacks", "description": "사전 정의된 집안일 프리셋 목록과 미리보기."},
+    ],
     "SWAGGER_UI_SETTINGS": {
         "persistAuthorization": True,
+        "displayRequestDuration": True,
+        "filter": True,
+        "docExpansion": "none",
     },
+    "CONTACT": {"name": "HomeN Backend", "email": "gitak.lee@theplatforms.io"},
 }
 
 SIMPLE_JWT = {
