@@ -123,8 +123,18 @@ SPECTACULAR_SETTINGS = {
         "displayRequestDuration": True,
         "filter": True,
         "docExpansion": "none",
+        # Schemas 패널을 펼쳐 example 값이 한 번에 보이도록 한다.
+        "defaultModelsExpandDepth": 2,
+        "defaultModelExpandDepth": 3,
+        # 요청 본문 편집기에 example value 를 자동 채워 사용성을 높인다.
+        "tryItOutEnabled": True,
     },
     "CONTACT": {"name": "HomeN Backend", "email": "gitak.lee@theplatforms.io"},
+    # field-level example 일괄 주입 (common.swagger.FIELD_EXAMPLES 참고).
+    "POSTPROCESSING_HOOKS": [
+        "drf_spectacular.hooks.postprocess_schema_enums",
+        "common.swagger.add_field_examples",
+    ],
 }
 
 SIMPLE_JWT = {
