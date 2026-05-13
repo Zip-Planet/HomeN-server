@@ -31,6 +31,7 @@ from apps.homes.serializers import (
     HomeChoreNoteOutputSerializer,
     HomeChoreNoteUpdateSerializer,
     HomeChoreOutputSerializer,
+    HomeChoreUpdateSerializer,
     HomeCreateSerializer,
     HomeInviteDetailSerializer,
     HomeJoinSerializer,
@@ -1087,6 +1088,235 @@ class HomeChoreListView(APIView):
             raise NotFound(str(e)) from e
 
         return Response(HomeChoreOutputSerializer(home_chores, many=True).data, status=status.HTTP_201_CREATED)
+
+
+# ── 집안일 단건 상세 / 수정 / 삭제 ────────────────────────────────────────────
+
+
+class HomeChoreDetailView(APIView):
+    """집안일 단건 상세조회 / 수정 / 삭제.
+
+    본인 집의 HomeChore 만 접근 가능 — 다른 집·미존재는 항상 404 (존재 비노출).
+    수정/삭제는 구성원 누구나 가능하며, 스타터팩 chore 수정은 copy-on-write 로
+    본인 집 전용 사본을 만들어 프리셋 데이터를 보존한다.
+    """
+
+    _OUTPUT_FIELDS_TABLE = (
+        "| 위치 | 필드 | 타입 | 설명 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| body | `id` | integer | HomeChore PK |\n"
+        "| body | `category` | integer | 카테고리 enum (1=쓰레기 ~ 5=세탁) |\n"
+        "| body | `category_label` | string | 카테고리 한글 |\n"
+        "| body | `name` | string | 집안일 제목 |\n"
+        "| body | `description` | string | 설명 (없으면 \"\") |\n"
+        "| body | `repeat_days` | integer[] | 반복 요일 (0=월 ~ 6=일) |\n"
+        "| body | `repeat_days_label` | string[] | 반복 요일 한글 (예: ['월','목']) |\n"
+        "| body | `difficulty` | integer | 난이도 enum (1~5) |\n"
+        "| body | `difficulty_label` | string | 3단계 라벨: '쉬움'(1~2), '중간'(3~4), '어려움'(5) |\n"
+        "| body | `point` | integer | 난이도 고정 포인트: 40/80/120/160/200 |\n\n"
+    )
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 집안일 단건 상세조회",
+        description=(
+            "## 🔥 설명\n"
+            "본인 집의 집안일 한 건을 상세 조회한다. 다른 집의 집안일은 존재 자체를 노출하지 않고 404 를 반환한다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 조회할 HomeChore PK |\n\n"
+            "## 📤 응답 (200)\n"
+            + _OUTPUT_FIELDS_TABLE
+            + "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 401 | `authentication_failed` | access 토큰 누락/만료 |\n"
+            "| 404 | `not_found` | 집안일 미존재 또는 다른 집의 집안일 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X GET '{host}/api/v1/homes/mine/chores/12/' \\\n"
+            "     -H 'Authorization: Bearer <access>'\n"
+            "```\n\n"
+            "**응답 (200):**\n"
+            "```json\n"
+            "{\n"
+            "  \"id\": 12, \"category\": 3, \"category_label\": \"청소\",\n"
+            "  \"name\": \"거실 청소\", \"description\": \"주 1회\",\n"
+            "  \"repeat_days\": [0, 3], \"repeat_days_label\": [\"월\", \"목\"],\n"
+            "  \"difficulty\": 2, \"difficulty_label\": \"쉬움\", \"point\": 80\n"
+            "}\n"
+            "```\n"
+        ),
+        responses={
+            200: OpenApiResponse(response=HomeChoreOutputSerializer, description="조회 성공."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="집안일 미존재 또는 다른 집의 집안일.",
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                "조회 성공",
+                value={
+                    "id": 12,
+                    "category": 3,
+                    "category_label": "청소",
+                    "name": "거실 청소",
+                    "description": "주 1회",
+                    "repeat_days": [0, 3],
+                    "repeat_days_label": ["월", "목"],
+                    "difficulty": 2,
+                    "difficulty_label": "쉬움",
+                    "point": 80,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+        ],
+    )
+    def get(self, request: Request, home_chore_id: int) -> Response:
+        home_chore = selectors.get_user_home_chore(request.user, home_chore_id)
+        if home_chore is None:
+            raise NotFound("집안일을 찾을 수 없습니다.")
+        return Response(HomeChoreOutputSerializer(home_chore).data)
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 집안일 부분 수정 (PATCH)",
+        description=(
+            "## 🔥 설명\n"
+            "본인 집의 집안일 메타를 부분 수정한다. **구성원 누구나** 호출 가능. 모든 필드는 optional 이며 "
+            "전달된 키만 적용된다. 스타터팩에서 비롯된 chore 는 **copy-on-write** — 프리셋 Chore 는 보존되고 "
+            "본인 집 전용 사본이 새로 생성되어 `HomeChore.chore` 가 교체된다(응답의 `id` 는 그대로).\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 수정할 HomeChore PK |\n"
+            "| body | `category` | integer | - | 카테고리 (1~5) |\n"
+            "| body | `name` | string | - | 집안일 제목 (1~20자) |\n"
+            "| body | `description` | string | - | 설명 (최대 20자, 빈 문자열 허용) |\n"
+            "| body | `repeat_days` | integer[] | - | 반복 요일 (0=월 ~ 6=일) |\n"
+            "| body | `difficulty` | integer | - | 난이도 (1~5) |\n\n"
+            "## 📤 응답 (200)\n"
+            + _OUTPUT_FIELDS_TABLE
+            + "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `invalid` | 필드 형식 위반 (잘못된 enum 값, 길이 초과 등) |\n"
+            "| 401 | `authentication_failed` | access 토큰 누락/만료 |\n"
+            "| 404 | `not_found` | 집안일 미존재 또는 다른 집의 집안일 |\n\n"
+            "## 💻 예제\n"
+            "**요청 (이름·요일만 수정):**\n"
+            "```bash\n"
+            "curl -X PATCH '{host}/api/v1/homes/mine/chores/12/' \\\n"
+            "     -H 'Authorization: Bearer <access>' \\\n"
+            "     -H 'Content-Type: application/json' \\\n"
+            "     -d '{\"name\":\"거실 대청소\",\"repeat_days\":[0,3]}'\n"
+            "```\n\n"
+            "**응답 (200):**\n"
+            "```json\n"
+            "{\n"
+            "  \"id\": 12, \"category\": 3, \"category_label\": \"청소\",\n"
+            "  \"name\": \"거실 대청소\", \"description\": \"주 1회\",\n"
+            "  \"repeat_days\": [0, 3], \"repeat_days_label\": [\"월\", \"목\"],\n"
+            "  \"difficulty\": 2, \"difficulty_label\": \"쉬움\", \"point\": 80\n"
+            "}\n"
+            "```\n"
+        ),
+        request=HomeChoreUpdateSerializer,
+        responses={
+            200: OpenApiResponse(response=HomeChoreOutputSerializer, description="수정된 집안일."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="유효성 검사 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="집안일 미존재 또는 다른 집의 집안일.",
+            ),
+        },
+        examples=[
+            OpenApiExample(
+                "이름·요일 부분 수정",
+                value={"name": "거실 대청소", "repeat_days": [0, 3]},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "난이도만 수정",
+                value={"difficulty": 4},
+                request_only=True,
+            ),
+            error_example(code="invalid", message="\"difficulty\" 는 1~5 사이의 정수여야 합니다.", name="잘못된 enum"),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+        ],
+    )
+    def patch(self, request: Request, home_chore_id: int) -> Response:
+        serializer = HomeChoreUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            home_chore = services.update_home_chore(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                fields=serializer.validated_data,
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        return Response(HomeChoreOutputSerializer(home_chore).data)
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 집안일 삭제 (구성원 누구나, 링크 해제)",
+        description=(
+            "## 🔥 설명\n"
+            "본인 집에서 해당 집안일 연결을 제거한다. **구성원 누구나** 호출 가능. 원본 `Chore` 는 보존되며, "
+            "스타터팩 chore 의 경우 다른 집에서 살아있는 연결에 영향을 주지 않는다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 삭제할 HomeChore PK |\n\n"
+            "## 📤 응답 (204)\n"
+            "응답 본문 없음.\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 401 | `authentication_failed` | access 토큰 누락/만료 |\n"
+            "| 404 | `not_found` | 집안일 미존재 또는 다른 집의 집안일 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X DELETE '{host}/api/v1/homes/mine/chores/12/' \\\n"
+            "     -H 'Authorization: Bearer <access>'\n"
+            "```\n"
+        ),
+        responses={
+            204: OpenApiResponse(description="삭제 성공 (응답 본문 없음)."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="집안일 미존재 또는 다른 집의 집안일.",
+            ),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+        ],
+    )
+    def delete(self, request: Request, home_chore_id: int) -> Response:
+        try:
+            services.delete_home_chore(user=request.user, home_chore_id=home_chore_id)
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ── 집안일 메모 (1:N) ──────────────────────────────────────────────────────────

@@ -439,6 +439,55 @@ class HomeChoreCreateSerializer(serializers.Serializer):
 @extend_schema_serializer(
     examples=[
         OpenApiExample(
+            "이름·요일만 부분 수정",
+            value={"name": "거실 청소", "repeat_days": [0, 3]},
+            request_only=True,
+        ),
+        OpenApiExample(
+            "난이도만 부분 수정",
+            value={"difficulty": 4},
+            request_only=True,
+        ),
+    ]
+)
+class HomeChoreUpdateSerializer(serializers.Serializer):
+    """집안일 수정 요청 (PATCH — 부분 수정).
+
+    모든 필드가 optional 이며, 전달된 키만 적용된다. 스타터팩에서 비롯된 chore 는
+    서비스 레이어에서 copy-on-write 로 처리되어 본인 집 전용 사본이 생성된다.
+    """
+
+    category = serializers.ChoiceField(
+        choices=ChoreCategory.choices,
+        required=False,
+        help_text="카테고리 enum (1=쓰레기 ~ 5=세탁).",
+    )
+    name = serializers.CharField(
+        max_length=20,
+        required=False,
+        help_text="집안일 제목 (1~20자).",
+    )
+    description = serializers.CharField(
+        max_length=20,
+        required=False,
+        allow_blank=True,
+        help_text="집안일 설명 (최대 20자, 빈 문자열 허용).",
+    )
+    repeat_days = serializers.ListField(
+        child=serializers.ChoiceField(choices=Chore.Weekday.choices),
+        required=False,
+        help_text="반복 요일 정수 배열 (0=월 ~ 6=일). 비반복이면 빈 배열.",
+    )
+    difficulty = serializers.ChoiceField(
+        choices=Chore.Difficulty.choices,
+        required=False,
+        help_text="난이도 enum (1=하 ~ 5=상).",
+    )
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample(
             "스타터팩 적용",
             summary="스타터팩 ID 만 보내 일괄 적용",
             value={"starter_pack_id": 1},
