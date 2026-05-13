@@ -1,6 +1,6 @@
 from django.db.models import QuerySet
 
-from apps.homes.models import Chore, Home, HomeChore, HomeImageType, HomeMember, StarterPack
+from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeImageType, HomeMember, StarterPack
 from apps.users.models import User
 
 
@@ -91,3 +91,26 @@ def get_starter_pack_chores(starter_pack_id: int) -> QuerySet[Chore]:
         해당 스타터팩의 Chore QuerySet.
     """
     return Chore.objects.filter(starter_pack_id=starter_pack_id).order_by("id")
+
+
+def get_home_chore_notes(user: User, home_chore_id: int) -> QuerySet[HomeChoreNote] | None:
+    """유저의 집에 속한 HomeChore 의 메모 목록을 반환합니다.
+
+    Args:
+        user: 호출 유저.
+        home_chore_id: 대상 HomeChore PK.
+
+    Returns:
+        메모 QuerySet (id 오름차순, author prefetch 포함). 본인 집의 chore 가
+        아니면 None.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        return None
+    if not HomeChore.objects.filter(id=home_chore_id, home=membership.home).exists():
+        return None
+    return (
+        HomeChoreNote.objects.select_related("author")
+        .filter(home_chore_id=home_chore_id)
+        .order_by("id")
+    )

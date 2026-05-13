@@ -4,7 +4,7 @@ from typing import Any
 
 from django.db import transaction
 
-from apps.homes.models import Chore, Home, HomeChore, HomeMember, Reward
+from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeMember, Reward
 from apps.homes.selectors import get_user_membership
 from apps.users.models import User
 
@@ -47,6 +47,14 @@ class StarterPackNotFoundError(HomeError):
 
 class AmbiguousChoreInputError(HomeError):
     """`starter_pack_id` 와 커스텀 `chores` 가 동시에 지정되었을 때 발생합니다."""
+
+
+class HomeChoreNoteNotFoundError(HomeError):
+    """집안일 메모를 찾을 수 없을 때 발생합니다."""
+
+
+class NotNoteAuthorError(HomeError):
+    """메모 작성자가 아닌 유저가 수정/삭제를 시도할 때 발생합니다."""
 
 
 # ──────────────────────────────────────────
@@ -359,35 +367,74 @@ def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
 
 
 # ──────────────────────────────────────────
-# 집안일 메모 수정
+# 집안일 메모 (HomeChoreNote, 1:N)
 # ──────────────────────────────────────────
 
 
-def update_home_chore_memo(*, user: User, home_chore_id: int, memo: str) -> HomeChore:
-    """집안일 메모를 수정합니다.
+def _get_home_chore_in_user_home(*, user: User, home_chore_id: int) -> HomeChore:
+    """유저의 집에 속한 HomeChore 를 찾고, 없으면 HomeChoreNotFoundError 를 발생.
 
-    Args:
-        user: 요청한 User 인스턴스.
-        home_chore_id: 수정할 HomeChore PK.
-        memo: 변경할 메모 내용.
-
-    Returns:
-        수정된 HomeChore 인스턴스.
-
-    Raises:
-        HomeChoreNotFoundError: 해당 집안일이 유저의 집에 존재하지 않는 경우.
+    notes 화면이 다른 집의 chore 를 노출하지 못하도록 모든 메모 CRUD 는 본 헬퍼를
+    먼저 통과해야 한다.
     """
     membership = get_user_membership(user)
     if membership is None:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
-
     try:
-        home_chore = HomeChore.objects.select_related("chore").get(
-            id=home_chore_id, home=membership.home
-        )
+        return HomeChore.objects.get(id=home_chore_id, home=membership.home)
     except HomeChore.DoesNotExist:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
 
-    home_chore.memo = memo
-    home_chore.save(update_fields=["memo"])
-    return home_chore
+
+def create_home_chore_note(*, user: User, home_chore_id: int, content: str) -> HomeChoreNote:
+    """집안일에 메모를 추가합니다 (구성원 누구나).
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    return HomeChoreNote.objects.create(home_chore=home_chore, author=user, content=content)
+
+
+def update_home_chore_note(
+    *, user: User, home_chore_id: int, note_id: int, content: str
+) -> HomeChoreNote:
+    """메모를 수정합니다. **작성자만** 가능.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+        HomeChoreNoteNotFoundError: 해당 메모가 존재하지 않거나 다른 집안일의 것인 경우.
+        NotNoteAuthorError: 작성자가 아닌 유저가 호출한 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    try:
+        note = HomeChoreNote.objects.get(id=note_id, home_chore=home_chore)
+    except HomeChoreNote.DoesNotExist:
+        raise HomeChoreNoteNotFoundError("메모를 찾을 수 없습니다.")
+
+    if note.author_id != user.id:
+        raise NotNoteAuthorError("본인이 작성한 메모만 수정할 수 있습니다.")
+
+    note.content = content
+    note.save(update_fields=["content", "updated_at"])
+    return note
+
+
+def delete_home_chore_note(*, user: User, home_chore_id: int, note_id: int) -> None:
+    """메모를 삭제합니다. **작성자만** 가능.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+        HomeChoreNoteNotFoundError: 해당 메모가 존재하지 않거나 다른 집안일의 것인 경우.
+        NotNoteAuthorError: 작성자가 아닌 유저가 호출한 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    try:
+        note = HomeChoreNote.objects.get(id=note_id, home_chore=home_chore)
+    except HomeChoreNote.DoesNotExist:
+        raise HomeChoreNoteNotFoundError("메모를 찾을 수 없습니다.")
+
+    if note.author_id != user.id:
+        raise NotNoteAuthorError("본인이 작성한 메모만 삭제할 수 있습니다.")
+
+    note.delete()

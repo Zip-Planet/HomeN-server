@@ -471,7 +471,6 @@ class TestHomeChoreListView:
         assert res.status_code == 201
         assert len(res.data) == 2
         assert res.data[0]["name"] == "쓰레기 버리기"
-        assert res.data[0]["memo"] == ""
         assert HomeChore.objects.filter(home=home).count() == 2
 
     def test_단건_생성_성공(self):
@@ -699,8 +698,16 @@ class TestHomeChoreListViewGet:
         assert res.status_code == 401
 
 
-class TestHomeChoreDetailView:
-    def test_메모_수정_성공(self):
+def _note_list_url(home_chore_id: int) -> str:
+    return f"/api/v1/homes/mine/chores/{home_chore_id}/notes/"
+
+
+def _note_detail_url(home_chore_id: int, note_id: int) -> str:
+    return f"/api/v1/homes/mine/chores/{home_chore_id}/notes/{note_id}/"
+
+
+class TestHomeChoreNoteListView:
+    def test_메모_작성_성공(self):
         user = UserFactory()
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
@@ -708,50 +715,151 @@ class TestHomeChoreDetailView:
         home_chore = HomeChoreFactory(home=home, chore=chore)
         client = auth_client(user)
 
-        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": "메모 내용"}, format="json")
+        res = client.post(_note_list_url(home_chore.pk), {"content": "환기 필수"}, format="json")
 
-        assert res.status_code == 200
-        assert res.data["memo"] == "메모 내용"
-        home_chore.refresh_from_db()
-        assert home_chore.memo == "메모 내용"
+        assert res.status_code == 201
+        assert res.data["content"] == "환기 필수"
+        assert res.data["author"]["uid"] == str(user.uid)
 
-    def test_메모_빈_문자열로_수정_성공(self):
+    def test_빈_content_400(self):
         user = UserFactory()
         home = HomeFactory()
-        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=user)
         chore = ChoreFactory(starter_pack=None)
         home_chore = HomeChoreFactory(home=home, chore=chore)
         client = auth_client(user)
 
-        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": ""}, format="json")
+        res = client.post(_note_list_url(home_chore.pk), {"content": ""}, format="json")
 
-        assert res.status_code == 200
-        assert res.data["memo"] == ""
+        assert res.status_code == 400
 
-    def test_다른_집_집안일_수정_불가_404(self):
+    def test_길이_초과_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.post(_note_list_url(home_chore.pk), {"content": "a" * 201}, format="json")
+
+        assert res.status_code == 400
+
+    def test_다른_집_집안일_404(self):
         user = UserFactory()
         home = HomeFactory()
         other_home = HomeFactory()
-        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
-        chore = ChoreFactory(starter_pack=None)
-        other_home_chore = HomeChoreFactory(home=other_home, chore=chore)
+        HomeMemberFactory(home=home, user=user)
+        other_home_chore = HomeChoreFactory(home=other_home, chore=ChoreFactory(starter_pack=None))
         client = auth_client(user)
 
-        res = client.patch(f"/api/v1/homes/mine/chores/{other_home_chore.pk}/", {"memo": "메모"}, format="json")
+        res = client.post(_note_list_url(other_home_chore.pk), {"content": "테스트"}, format="json")
 
         assert res.status_code == 404
 
-    def test_집_없는_유저_404(self):
+    def test_목록_조회_성공(self):
         user = UserFactory()
+        other = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user)
+        HomeMemberFactory(home=home, user=other)
         chore = ChoreFactory(starter_pack=None)
-        home_chore = HomeChoreFactory(chore=chore)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+        client.post(_note_list_url(home_chore.pk), {"content": "first"}, format="json")
+        auth_client(other).post(_note_list_url(home_chore.pk), {"content": "second"}, format="json")
+
+        res = client.get(_note_list_url(home_chore.pk))
+
+        assert res.status_code == 200
+        assert [n["content"] for n in res.data] == ["first", "second"]
+        # 작성자 정보 노출 검증
+        authors = [n["author"]["uid"] for n in res.data]
+        assert str(user.uid) in authors and str(other.uid) in authors
+
+    def test_메모_없을_때_빈_배열(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
         client = auth_client(user)
 
-        res = client.patch(f"/api/v1/homes/mine/chores/{home_chore.pk}/", {"memo": "메모"}, format="json")
+        res = client.get(_note_list_url(home_chore.pk))
+
+        assert res.status_code == 200
+        assert res.data == []
+
+    def test_미인증_401(self):
+        res = APIClient().get(_note_list_url(1))
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreNoteDetailView:
+    def _setup(self, *, author_role=HomeMember.Role.MEMBER):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=author_role)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+        post = client.post(_note_list_url(home_chore.pk), {"content": "원본"}, format="json")
+        assert post.status_code == 201
+        return user, home, home_chore, post.data["id"], client
+
+    def test_작성자_수정_성공(self):
+        user, home, home_chore, note_id, client = self._setup()
+
+        res = client.patch(_note_detail_url(home_chore.pk, note_id), {"content": "수정"}, format="json")
+
+        assert res.status_code == 200
+        assert res.data["content"] == "수정"
+
+    def test_다른_유저_수정_403(self):
+        author, home, home_chore, note_id, _ = self._setup()
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other)
+        other_client = auth_client(other)
+
+        res = other_client.patch(_note_detail_url(home_chore.pk, note_id), {"content": "남이 수정"}, format="json")
+
+        assert res.status_code == 403
+
+    def test_작성자_삭제_성공(self):
+        user, home, home_chore, note_id, client = self._setup()
+
+        res = client.delete(_note_detail_url(home_chore.pk, note_id))
+
+        assert res.status_code == 204
+
+    def test_다른_유저_삭제_403(self):
+        author, home, home_chore, note_id, _ = self._setup()
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other)
+        other_client = auth_client(other)
+
+        res = other_client.delete(_note_detail_url(home_chore.pk, note_id))
+
+        assert res.status_code == 403
+
+    def test_없는_note_id_404(self):
+        user, home, home_chore, note_id, client = self._setup()
+
+        res = client.patch(_note_detail_url(home_chore.pk, 99999), {"content": "x"}, format="json")
+
+        assert res.status_code == 404
+
+    def test_다른_집_집안일_404(self):
+        user, home, home_chore, note_id, client = self._setup()
+        other_home = HomeFactory()
+        other_chore = HomeChoreFactory(home=other_home, chore=ChoreFactory(starter_pack=None))
+
+        res = client.patch(_note_detail_url(other_chore.pk, note_id), {"content": "x"}, format="json")
 
         assert res.status_code == 404
 
     def test_미인증_401(self):
-        res = APIClient().patch("/api/v1/homes/mine/chores/1/", {"memo": "메모"}, format="json")
+        res = APIClient().delete(_note_detail_url(1, 1))
 
         assert res.status_code == 401

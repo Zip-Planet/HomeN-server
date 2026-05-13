@@ -163,6 +163,9 @@ class Chore(models.Model):
 class HomeChore(models.Model):
     """집에 배정된 집안일 모델.
 
+    메모는 별도 모델(`HomeChoreNote`) 로 1:N 관리한다 (Figma 의 메모 화면이 다중
+    작성자 메모 + 수정/삭제를 노출하므로).
+
     Attributes:
         home: 대상 집.
         chore: 배정된 집안일.
@@ -171,7 +174,6 @@ class HomeChore(models.Model):
 
     home = models.ForeignKey(Home, on_delete=models.CASCADE, related_name="home_chores")
     chore = models.ForeignKey(Chore, on_delete=models.CASCADE, related_name="home_chores")
-    memo = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -180,6 +182,33 @@ class HomeChore(models.Model):
 
     def __str__(self) -> str:
         return f"home_chore:{self.pk}"
+
+
+class HomeChoreNote(models.Model):
+    """집안일에 작성자가 남기는 메모 (1:N).
+
+    Figma 의 \"집안일 상세\" 화면이 메모 목록을 다중 작성자/수정·삭제 가능한 형태
+    로 노출한다. 본 모델은 그 목록의 단일 row 다.
+
+    Attributes:
+        home_chore: 대상 HomeChore.
+        author: 메모를 작성한 User.
+        content: 메모 본문 (최대 200자).
+        created_at / updated_at: 생성·수정 일시.
+    """
+
+    home_chore = models.ForeignKey(HomeChore, on_delete=models.CASCADE, related_name="notes")
+    author = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="home_chore_notes")
+    content = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "home_chore_notes"
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"home_chore_note:{self.pk}"
 
 
 class Reward(models.Model):
