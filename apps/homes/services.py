@@ -41,6 +41,14 @@ class HomeChoreNotFoundError(HomeError):
     """집안일을 찾을 수 없을 때 발생합니다."""
 
 
+class StarterPackNotFoundError(HomeError):
+    """스타터팩 ID 에 해당하는 chore 가 없을 때 발생합니다."""
+
+
+class AmbiguousChoreInputError(HomeError):
+    """`starter_pack_id` 와 커스텀 `chores` 가 동시에 지정되었을 때 발생합니다."""
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -71,26 +79,36 @@ def create_home(
     image_id: int,
     chores: list[dict[str, Any]],
     rewards: list[dict[str, Any]],
+    starter_pack_id: int | None = None,
 ) -> Home:
     """집을 생성하고 요청 유저를 관리자로 등록합니다.
 
-    집안일 목록과 리워드 목록을 함께 받아 하나의 트랜잭션으로 처리합니다.
-    빈 리스트를 전달하면 해당 항목은 생성하지 않습니다.
+    집안일·리워드를 함께 받아 하나의 트랜잭션으로 처리합니다. 집안일 입력은
+    다음 둘 중 하나만 허용합니다 (둘 다 비어 있어도 됨):
+    - `starter_pack_id`: 해당 스타터팩의 chore 들을 일괄로 HomeChore 로 연결.
+    - `chores`: 커스텀 chore 정의 배열 (각 dict 가 Chore 신규 생성으로 이어짐).
 
     Args:
         user: 집을 생성하는 User 인스턴스.
         name: 집 이름.
         image_id: 선택된 집 이미지 enum 값.
-        chores: [{"name": ..., "image": ..., "points": ..., "repeat_days": ..., "difficulty": ...}, ...]
-            형식의 집안일 목록. 빈 리스트면 생성하지 않습니다.
+        chores: 커스텀 집안일 데이터 목록. 빈 리스트면 생성하지 않습니다.
         rewards: [{"name": ..., "goal_point": ...}, ...] 형식의 리워드 목록. 빈 리스트면 생성하지 않습니다.
+        starter_pack_id: 적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들을 일괄 연결.
 
     Returns:
         생성된 Home 인스턴스.
 
     Raises:
         AlreadyHasHomeError: 이미 집이 있는 경우.
+        AmbiguousChoreInputError: `starter_pack_id` 와 커스텀 `chores` 가 동시에 지정된 경우.
+        StarterPackNotFoundError: `starter_pack_id` 에 해당하는 chore 가 없는 경우.
     """
+    if starter_pack_id is not None and chores:
+        raise AmbiguousChoreInputError(
+            "`starter_pack_id` 와 `chores` 는 동시에 지정할 수 없습니다."
+        )
+
     if HomeMember.objects.filter(user=user).exists():
         raise AlreadyHasHomeError("이미 속한 집이 있습니다.")
 
@@ -103,7 +121,9 @@ def create_home(
         )
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)
 
-        if chores:
+        if starter_pack_id is not None:
+            _apply_starter_pack_to_home(home=home, starter_pack_id=starter_pack_id)
+        elif chores:
             chore_objs = Chore.objects.bulk_create([
                 Chore(
                     category=c["category"],
@@ -122,6 +142,36 @@ def create_home(
             )
 
     return home
+
+
+def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[HomeChore]:
+    """스타터팩의 chore 들을 주어진 집에 HomeChore 로 일괄 연결합니다.
+
+    이미 같은 (home, chore) 쌍이 있으면 건너뜁니다 (멱등 — 동일 팩 재적용 안전).
+
+    Args:
+        home: 대상 Home 인스턴스.
+        starter_pack_id: 적용할 StarterPack PK.
+
+    Returns:
+        새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
+
+    Raises:
+        StarterPackNotFoundError: 해당 스타터팩에 chore 가 하나도 없는 경우.
+    """
+    pack_chores = list(Chore.objects.filter(starter_pack_id=starter_pack_id))
+    if not pack_chores:
+        raise StarterPackNotFoundError(
+            f"스타터팩(id={starter_pack_id}) 또는 해당 집안일을 찾을 수 없습니다."
+        )
+
+    existing_chore_ids = set(
+        HomeChore.objects.filter(home=home, chore__in=pack_chores).values_list("chore_id", flat=True)
+    )
+    to_create = [HomeChore(home=home, chore=c) for c in pack_chores if c.id not in existing_chore_ids]
+    if not to_create:
+        return []
+    return HomeChore.objects.bulk_create(to_create)
 
 
 # ──────────────────────────────────────────
@@ -248,9 +298,9 @@ def transfer_admin(*, user: User, target_uid: str) -> None:
 
 
 def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[HomeChore]:
-    """유저의 집에 집안일을 추가합니다.
+    """유저의 집에 커스텀 집안일을 추가합니다.
 
-    단건 및 복수 생성 모두 지원합니다.
+    단건 및 복수 생성 모두 지원합니다. 스타터팩 일괄 적용은 `apply_starter_pack` 을 사용.
 
     Args:
         user: 요청한 User 인스턴스.
@@ -260,7 +310,7 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
         생성된 HomeChore 인스턴스 목록.
 
     Raises:
-        NotHomeAdminError: 요청자가 관리자가 아닌 경우.
+        HomeNotFoundError: 요청자가 집에 속하지 않은 경우.
     """
     membership = get_user_membership(user)
     if membership is None:
@@ -282,6 +332,30 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
         ])
 
     return home_chore_objs
+
+
+def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
+    """유저의 집에 스타터팩 chore 들을 일괄 등록합니다.
+
+    이미 동일 (home, chore) 쌍이 있으면 건너뛰어 멱등성을 보장합니다.
+
+    Args:
+        user: 요청한 User 인스턴스.
+        starter_pack_id: 적용할 StarterPack PK.
+
+    Returns:
+        새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
+
+    Raises:
+        HomeNotFoundError: 요청자가 집에 속하지 않은 경우.
+        StarterPackNotFoundError: 해당 스타터팩에 chore 가 하나도 없는 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeNotFoundError("속한 집이 없습니다.")
+
+    with transaction.atomic():
+        return _apply_starter_pack_to_home(home=membership.home, starter_pack_id=starter_pack_id)
 
 
 # ──────────────────────────────────────────
