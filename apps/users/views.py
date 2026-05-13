@@ -33,6 +33,7 @@ from apps.users.serializers import (
     UserProfileOutputSerializer,
     UserProfileUpdateSerializer,
 )
+from common.error_responses import ErrorResponseSerializer, error_example
 
 
 # ── 소셜 로그인 ──────────────────────────────────────────────────────────────
@@ -68,15 +69,35 @@ class KakaoLoginView(APIView):
                 response=TokenOutputSerializer,
                 description="로그인 성공 — 토큰 + 온보딩/집 보유 플래그 반환.",
             ),
-            400: OpenApiResponse(description="`code` 누락 등 입력 유효성 실패."),
-            401: OpenApiResponse(description="카카오 인증 실패 (만료/위조 코드, 카카오 응답 오류 등)."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="`code` 누락 등 입력 유효성 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="카카오 인증 실패."),
         },
         examples=[
+            OpenApiExample("정상 요청", value={"code": "abc123XYZ_kakao_authorization_code"}, request_only=True),
             OpenApiExample(
-                "정상 요청",
-                value={"code": "abc123XYZ_kakao_authorization_code"},
-                request_only=True,
+                "신규 가입 직후",
+                value={
+                    "access": "eyJhbGciOiJIUzI1NiIs...access...",
+                    "refresh": "eyJhbGciOiJIUzI1NiIs...refresh...",
+                    "is_profile_set": False,
+                    "has_home": False,
+                },
+                response_only=True,
+                status_codes=["200"],
             ),
+            OpenApiExample(
+                "재로그인 — 프로필 + 집 있음",
+                value={
+                    "access": "eyJhbGciOiJIUzI1NiIs...access...",
+                    "refresh": "eyJhbGciOiJIUzI1NiIs...refresh...",
+                    "is_profile_set": True,
+                    "has_home": True,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="invalid", message="code 필드는 필수입니다.", name="code 누락"),
+            error_example(code="authentication_failed", message="카카오 토큰 교환 실패: invalid_grant", name="카카오 인증 실패"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -118,9 +139,9 @@ class AppleLoginView(APIView):
         ),
         request=AppleLoginSerializer,
         responses={
-            200: OpenApiResponse(response=TokenOutputSerializer, description="로그인 성공."),
-            400: OpenApiResponse(description="`code` 누락 등 입력 유효성 실패."),
-            401: OpenApiResponse(description="Apple 인증 실패 (만료/위조 코드, id_token 검증 실패 등)."),
+            200: OpenApiResponse(response=TokenOutputSerializer, description="로그인 성공 — 토큰 + 온보딩/집 보유 플래그 반환."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="`code` 누락 등 입력 유효성 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="Apple 인증 실패 (만료/위조 코드, id_token 검증 실패 등)."),
         },
         examples=[
             OpenApiExample(
@@ -128,6 +149,30 @@ class AppleLoginView(APIView):
                 value={"code": "c1.0.abcdef.0.apple_authorization_code"},
                 request_only=True,
             ),
+            OpenApiExample(
+                "신규 가입 직후",
+                value={
+                    "access": "eyJhbGciOiJIUzI1NiIs...access...",
+                    "refresh": "eyJhbGciOiJIUzI1NiIs...refresh...",
+                    "is_profile_set": False,
+                    "has_home": False,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            OpenApiExample(
+                "재로그인 — 프로필 + 집 있음",
+                value={
+                    "access": "eyJhbGciOiJIUzI1NiIs...access...",
+                    "refresh": "eyJhbGciOiJIUzI1NiIs...refresh...",
+                    "is_profile_set": True,
+                    "has_home": True,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="invalid", message="code 필드는 필수입니다.", name="code 누락"),
+            error_example(code="authentication_failed", message="Apple 토큰 교환 실패: invalid_client", name="Apple 인증 실패"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -166,15 +211,17 @@ class LogoutView(APIView):
         request=LogoutSerializer,
         responses={
             204: OpenApiResponse(description="로그아웃 처리 완료 — 응답 본문 없음."),
-            400: OpenApiResponse(description="유효하지 않은 토큰 또는 이미 블랙된 토큰."),
-            401: OpenApiResponse(description="access 토큰 누락 또는 만료."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="유효하지 않은 토큰 또는 이미 블랙된 토큰."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락 또는 만료."),
         },
         examples=[
             OpenApiExample(
                 "정상 요청",
-                value={"refresh": "eyJhbGciOiJIUzI1NiIs..."},
+                value={"refresh": "eyJhbGciOiJIUzI1NiIs...refresh..."},
                 request_only=True,
             ),
+            error_example(code="invalid_token", message="Token is invalid or expired", name="유효하지 않은 토큰"),
+            error_example(code="authentication_failed", message="Authentication credentials were not provided.", name="인증 실패"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -212,8 +259,33 @@ class UserMeView(APIView):
         ),
         responses={
             200: OpenApiResponse(response=UserProfileOutputSerializer, description="조회 성공."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
+        examples=[
+            OpenApiExample(
+                "온보딩 미완료 (신규 가입 직후)",
+                value={
+                    "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                    "name": "",
+                    "profile_image": None,
+                    "home_role": None,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            OpenApiExample(
+                "온보딩 완료 + 집 보유 (관리자)",
+                value={
+                    "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                    "name": "홍길동",
+                    "profile_image": 3,
+                    "home_role": "admin",
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="authentication_failed", message="Authentication credentials were not provided.", name="인증 실패"),
+        ],
     )
     def get(self, request: Request) -> Response:
         return Response(UserProfileOutputSerializer(request.user).data)
@@ -231,11 +303,25 @@ class UserMeView(APIView):
         request=UserProfileUpdateSerializer,
         responses={
             200: OpenApiResponse(response=UserProfileOutputSerializer, description="변경 후 최신 프로필."),
-            400: OpenApiResponse(description="유효성 검사 실패 또는 닉네임 중복."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="유효성 검사 실패 또는 닉네임 중복."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
         examples=[
             OpenApiExample("정상 요청", value={"name": "홍길동", "profile_image": 3}, request_only=True),
+            OpenApiExample(
+                "변경 성공",
+                value={
+                    "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                    "name": "홍길동",
+                    "profile_image": 3,
+                    "home_role": "member",
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="invalid", message="닉네임은 한글·영문·숫자 1~8자만 허용됩니다.", name="형식 위반"),
+            error_example(code="duplicate_nickname", message="이미 사용 중인 닉네임입니다.", name="닉네임 중복"),
+            error_example(code="authentication_failed", message="Authentication credentials were not provided.", name="인증 실패"),
         ],
     )
     def patch(self, request: Request) -> Response:
@@ -265,9 +351,17 @@ class UserMeView(APIView):
         ),
         responses={
             204: OpenApiResponse(description="탈퇴 완료 — 응답 본문 없음."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="집 관리자는 양도 또는 집 삭제 후 탈퇴 가능."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="집 관리자는 양도 또는 집 삭제 후 탈퇴 가능."),
         },
+        examples=[
+            error_example(code="authentication_failed", message="Authentication credentials were not provided.", name="인증 실패"),
+            error_example(
+                code="home_admin_cannot_withdraw",
+                message="집 관리자는 직접 탈퇴할 수 없습니다. 관리자를 양도하거나 집을 삭제해주세요.",
+                name="관리자 탈퇴 불가",
+            ),
+        ],
     )
     def delete(self, request: Request) -> Response:
         try:
@@ -298,6 +392,14 @@ class ProfileImageListView(APIView):
         responses={
             200: OpenApiResponse(response=ProfileImageIdSerializer(many=True), description="enum ID 배열."),
         },
+        examples=[
+            OpenApiExample(
+                "전체 enum 목록",
+                value=[{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}],
+                response_only=True,
+                status_codes=["200"],
+            ),
+        ],
     )
     def get(self, request: Request) -> Response:
         return Response(selectors.get_profile_image_choices())
@@ -329,8 +431,23 @@ class NicknameAvailabilityView(APIView):
                 response=NicknameAvailabilitySerializer,
                 description="사용 가능 여부.",
             ),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
+        examples=[
+            OpenApiExample(
+                "사용 가능",
+                value={"is_available": True},
+                response_only=True,
+                status_codes=["200"],
+            ),
+            OpenApiExample(
+                "이미 사용 중",
+                value={"is_available": False},
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="authentication_failed", message="Authentication credentials were not provided.", name="인증 실패"),
+        ],
     )
     def get(self, request: Request, nickname: str) -> Response:
         return Response({"is_available": selectors.is_nickname_available(nickname)})

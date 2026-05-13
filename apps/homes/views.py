@@ -40,6 +40,15 @@ from apps.homes.serializers import (
     StarterPackSerializer,
     TransferAdminSerializer,
 )
+from common.error_responses import ErrorResponseSerializer, error_example
+
+
+# 공통 응답 예시 (status_codes=["200"|"201"|"204"|...])
+_AUTH_FAILED_EXAMPLE = error_example(
+    code="authentication_failed",
+    message="Authentication credentials were not provided.",
+    name="인증 실패",
+)
 
 
 # ── 프리셋 ──────────────────────────────────────────────────────────────────
@@ -62,6 +71,14 @@ class HomeImageListView(APIView):
         responses={
             200: OpenApiResponse(response=ImageIdSerializer(many=True), description="enum ID 배열."),
         },
+        examples=[
+            OpenApiExample(
+                "전체 enum 목록",
+                value=[{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}, {"id": 6}, {"id": 7}, {"id": 8}],
+                response_only=True,
+                status_codes=["200"],
+            ),
+        ],
     )
     def get(self, request: Request) -> Response:
         return Response(selectors.get_home_image_choices())
@@ -96,12 +113,13 @@ class HomeCreateView(APIView):
         request=HomeCreateSerializer,
         responses={
             201: OpenApiResponse(response=HomeOutputSerializer, description="생성된 집 (관리자 본인 포함된 members)."),
-            400: OpenApiResponse(description="이미 집이 있거나 입력 유효성 실패."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="이미 집이 있거나 입력 유효성 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="`starter_pack_id` 에 해당하는 스타터팩이 없음."),
         },
         examples=[
             OpenApiExample(
-                "정상 요청",
+                "커스텀 chore + reward",
                 value={
                     "name": "우리집",
                     "image_id": 1,
@@ -118,6 +136,44 @@ class HomeCreateView(APIView):
                 },
                 request_only=True,
             ),
+            OpenApiExample(
+                "스타터팩 적용",
+                value={"name": "우리집", "image_id": 2, "starter_pack_id": 1, "chores": [], "rewards": []},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "집만 생성 (chore/reward 없음)",
+                value={"name": "우리집", "image_id": 3, "chores": [], "rewards": []},
+                request_only=True,
+            ),
+            OpenApiExample(
+                "생성 성공",
+                value={
+                    "id": 1,
+                    "name": "우리집",
+                    "image_id": 1,
+                    "invite_code": "AB12CD",
+                    "members": [
+                        {
+                            "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                            "name": "홍길동",
+                            "profile_image": 3,
+                            "role": "admin",
+                        }
+                    ],
+                },
+                response_only=True,
+                status_codes=["201"],
+            ),
+            error_example(code="already_has_home", message="이미 속한 집이 있습니다.", name="이미 집 있음"),
+            error_example(
+                code="ambiguous_chore_input",
+                message="starter_pack_id 와 chores 는 동시에 지정할 수 없습니다.",
+                name="입력 분기 오류",
+            ),
+            error_example(code="invalid", message="이름은 1~10자여야 합니다.", name="이름 형식 위반"),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="스타터팩을 찾을 수 없습니다.", name="스타터팩 미존재"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -162,9 +218,38 @@ class HomeDetailView(APIView):
         ),
         responses={
             200: OpenApiResponse(response=HomeOutputSerializer, description="조회 성공."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="속한 집 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집 없음."),
         },
+        examples=[
+            OpenApiExample(
+                "조회 성공",
+                value={
+                    "id": 1,
+                    "name": "우리집",
+                    "image_id": 1,
+                    "invite_code": "AB12CD",
+                    "members": [
+                        {
+                            "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                            "name": "홍길동",
+                            "profile_image": 3,
+                            "role": "admin",
+                        },
+                        {
+                            "uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc",
+                            "name": "김철수",
+                            "profile_image": 1,
+                            "role": "member",
+                        },
+                    ],
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
+        ],
     )
     def get(self, request: Request) -> Response:
         home = selectors.get_user_home(request.user)
@@ -184,10 +269,23 @@ class HomeDetailView(APIView):
         ),
         responses={
             204: OpenApiResponse(description="삭제 완료 — 응답 본문 없음."),
-            400: OpenApiResponse(description="구성원이 있어 삭제 불가 (`home_has_members`)."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="관리자만 집을 삭제할 수 있음."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="구성원이 있어 삭제 불가 (`home_has_members`)."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자만 집을 삭제할 수 있음."),
         },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="home_has_members",
+                message="구성원이 남아 있어 집을 삭제할 수 없습니다.",
+                name="구성원 잔존",
+            ),
+            error_example(
+                code="permission_denied",
+                message="관리자만 집을 삭제할 수 있습니다.",
+                name="관리자 아님",
+            ),
+        ],
     )
     def delete(self, request: Request) -> Response:
         try:
@@ -217,8 +315,13 @@ class HomeMembershipView(APIView):
         ),
         responses={
             200: OpenApiResponse(response=HomeMembershipSerializer, description="항상 200 반환."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
+        examples=[
+            OpenApiExample("집 있음", value={"has_home": True}, response_only=True, status_codes=["200"]),
+            OpenApiExample("집 없음", value={"has_home": False}, response_only=True, status_codes=["200"]),
+            _AUTH_FAILED_EXAMPLE,
+        ],
     )
     def get(self, request: Request) -> Response:
         home = selectors.get_user_home(request.user)
@@ -248,9 +351,30 @@ class HomeInviteView(APIView):
         ],
         responses={
             200: OpenApiResponse(response=HomeInviteDetailSerializer, description="조회 성공."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="유효하지 않은 초대코드."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="유효하지 않은 초대코드."),
         },
+        examples=[
+            OpenApiExample(
+                "조회 성공",
+                value={
+                    "name": "우리집",
+                    "image_id": 1,
+                    "members": [
+                        {
+                            "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                            "name": "홍길동",
+                            "profile_image": 3,
+                            "role": "admin",
+                        }
+                    ],
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="유효하지 않은 초대코드입니다.", name="잘못된 초대코드"),
+        ],
     )
     def get(self, request: Request, code: str) -> Response:
         home = selectors.get_home_by_invite_code(code)
@@ -278,12 +402,40 @@ class HomeJoinView(APIView):
         request=HomeJoinSerializer,
         responses={
             200: OpenApiResponse(response=HomeOutputSerializer, description="참여 후 최신 집 정보."),
-            400: OpenApiResponse(description="이미 다른 집에 속해 있음."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="유효하지 않은 초대코드."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="이미 다른 집에 속해 있음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="유효하지 않은 초대코드."),
         },
         examples=[
             OpenApiExample("정상 요청", value={"invite_code": "AB12CD"}, request_only=True),
+            OpenApiExample(
+                "참여 성공",
+                value={
+                    "id": 1,
+                    "name": "우리집",
+                    "image_id": 1,
+                    "invite_code": "AB12CD",
+                    "members": [
+                        {
+                            "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                            "name": "홍길동",
+                            "profile_image": 3,
+                            "role": "admin",
+                        },
+                        {
+                            "uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc",
+                            "name": "김철수",
+                            "profile_image": 1,
+                            "role": "member",
+                        },
+                    ],
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="already_has_home", message="이미 속한 집이 있습니다.", name="이미 집 있음"),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="유효하지 않은 초대코드입니다.", name="잘못된 초대코드"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -322,10 +474,19 @@ class HomeLeaveView(APIView):
         ),
         responses={
             204: OpenApiResponse(description="나가기 완료 — 응답 본문 없음."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="관리자는 양도 또는 집 삭제 후 나갈 수 있음."),
-            404: OpenApiResponse(description="속한 집 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자는 양도 또는 집 삭제 후 나갈 수 있음."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집 없음."),
         },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="admin_cannot_leave",
+                message="관리자는 직접 나갈 수 없습니다. 관리자를 양도하거나 집을 삭제해주세요.",
+                name="관리자 직접 나가기 불가",
+            ),
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
+        ],
     )
     def post(self, request: Request) -> Response:
         try:
@@ -358,15 +519,26 @@ class HomeTransferAdminView(APIView):
         request=TransferAdminSerializer,
         responses={
             204: OpenApiResponse(description="양도 완료 — 응답 본문 없음."),
-            400: OpenApiResponse(description="대상이 같은 집의 구성원이 아님."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="관리자만 양도 가능."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="대상이 같은 집의 구성원이 아님."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자만 양도 가능."),
         },
         examples=[
             OpenApiExample(
                 "정상 요청",
-                value={"user_id": "8f3e2b1a-1234-4abc-9def-1234567890ab"},
+                value={"user_id": "9a4f3c2b-2345-4bcd-8def-2345678901bc"},
                 request_only=True,
+            ),
+            error_example(
+                code="transfer_admin_target",
+                message="대상이 같은 집의 구성원이 아닙니다.",
+                name="대상 무효",
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="permission_denied",
+                message="관리자만 양도할 수 있습니다.",
+                name="관리자 아님",
             ),
         ],
     )
@@ -408,9 +580,42 @@ class HomeChoreListView(APIView):
                 response=HomeChoreOutputSerializer(many=True),
                 description="집안일 배열 (비어 있을 수 있음).",
             ),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="속한 집 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집 없음."),
         },
+        examples=[
+            OpenApiExample(
+                "집안일 목록",
+                value=[
+                    {
+                        "id": 1,
+                        "category": 3,
+                        "name": "거실 청소",
+                        "description": "주 1회",
+                        "repeat_days": [0, 3],
+                        "repeat_days_label": ["월", "목"],
+                        "difficulty": 2,
+                        "difficulty_label": "쉬움",
+                        "point": 80,
+                    },
+                    {
+                        "id": 2,
+                        "category": 5,
+                        "name": "분리수거",
+                        "description": "매주 화요일",
+                        "repeat_days": [1],
+                        "repeat_days_label": ["화"],
+                        "difficulty": 3,
+                        "difficulty_label": "중간",
+                        "point": 120,
+                    },
+                ],
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
+        ],
     )
     def get(self, request: Request) -> Response:
         home = selectors.get_user_home(request.user)
@@ -435,16 +640,18 @@ class HomeChoreListView(APIView):
                 response=HomeChoreOutputSerializer(many=True),
                 description="생성된 집안일 배열 (스타터팩 적용 시 신규로 추가된 것만).",
             ),
-            400: OpenApiResponse(description="유효성 검사 실패 / 입력 분기 오류 (`ambiguous_chore_input`, `missing_chore_input`)."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="속한 집 없음 또는 `starter_pack_id` 에 해당하는 chore 없음."),
+            400: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="유효성 검사 실패 / 입력 분기 오류 (`ambiguous_chore_input`, `missing_chore_input`).",
+            ),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="속한 집 없음 또는 `starter_pack_id` 에 해당하는 chore 없음.",
+            ),
         },
         examples=[
-            OpenApiExample(
-                "스타터팩 적용",
-                value={"starter_pack_id": 1},
-                request_only=True,
-            ),
+            OpenApiExample("스타터팩 적용", value={"starter_pack_id": 1}, request_only=True),
             OpenApiExample(
                 "커스텀 단건",
                 value={
@@ -460,6 +667,46 @@ class HomeChoreListView(APIView):
                 },
                 request_only=True,
             ),
+            OpenApiExample(
+                "커스텀 복수",
+                value={
+                    "chores": [
+                        {"category": 3, "name": "거실 청소", "description": "주 1회", "repeat_days": [0], "difficulty": 2},
+                        {"category": 5, "name": "분리수거", "description": "매주 화요일", "repeat_days": [1], "difficulty": 3},
+                    ]
+                },
+                request_only=True,
+            ),
+            OpenApiExample(
+                "생성 성공 (단건)",
+                value=[
+                    {
+                        "id": 1,
+                        "category": 3,
+                        "name": "거실 청소",
+                        "description": "주 1회",
+                        "repeat_days": [0],
+                        "repeat_days_label": ["월"],
+                        "difficulty": 2,
+                        "difficulty_label": "쉬움",
+                        "point": 80,
+                    }
+                ],
+                response_only=True,
+                status_codes=["201"],
+            ),
+            error_example(
+                code="ambiguous_chore_input",
+                message="starter_pack_id 와 chores 는 동시에 지정할 수 없습니다.",
+                name="입력 분기 오류",
+            ),
+            error_example(
+                code="missing_chore_input",
+                message="starter_pack_id 또는 chores 중 하나는 필수입니다.",
+                name="입력 누락",
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
         ],
     )
     def post(self, request: Request) -> Response:
@@ -515,9 +762,31 @@ class HomeChoreNoteListView(APIView):
                 response=HomeChoreNoteOutputSerializer(many=True),
                 description="메모 배열 (작성자 정보 포함).",
             ),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="해당 집안일이 본인 집에 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="해당 집안일이 본인 집에 없음."),
         },
+        examples=[
+            OpenApiExample(
+                "메모 목록",
+                value=[
+                    {
+                        "id": 1,
+                        "author": {
+                            "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                            "name": "홍길동",
+                            "profile_image": 3,
+                        },
+                        "content": "락스 사용 시 환기 필수",
+                        "created_at": "2026-05-12T10:00:00Z",
+                        "updated_at": "2026-05-12T10:00:00Z",
+                    }
+                ],
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+        ],
     )
     def get(self, request: Request, home_chore_id: int) -> Response:
         notes = selectors.get_home_chore_notes(request.user, home_chore_id)
@@ -540,15 +809,35 @@ class HomeChoreNoteListView(APIView):
         ],
         request=HomeChoreNoteCreateSerializer,
         responses={
-            201: OpenApiResponse(
-                response=HomeChoreNoteOutputSerializer, description="생성된 메모."
+            201: OpenApiResponse(response=HomeChoreNoteOutputSerializer, description="생성된 메모."),
+            400: OpenApiResponse(
+                response=ErrorResponseSerializer,
+                description="유효성 검사 실패 (`content` 길이 초과 등).",
             ),
-            400: OpenApiResponse(description="유효성 검사 실패 (`content` 길이 초과 등)."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            404: OpenApiResponse(description="해당 집안일이 본인 집에 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="해당 집안일이 본인 집에 없음."),
         },
         examples=[
             OpenApiExample("메모 작성", value={"content": "락스 사용 시 환기 필수"}, request_only=True),
+            OpenApiExample(
+                "작성 성공",
+                value={
+                    "id": 1,
+                    "author": {
+                        "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                        "name": "홍길동",
+                        "profile_image": 3,
+                    },
+                    "content": "락스 사용 시 환기 필수",
+                    "created_at": "2026-05-12T10:00:00Z",
+                    "updated_at": "2026-05-12T10:00:00Z",
+                },
+                response_only=True,
+                status_codes=["201"],
+            ),
+            error_example(code="invalid", message="content 는 200자 이하여야 합니다.", name="내용 길이 초과"),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
         ],
     )
     def post(self, request: Request, home_chore_id: int) -> Response:
@@ -585,12 +874,38 @@ class HomeChoreNoteDetailView(APIView):
         request=HomeChoreNoteUpdateSerializer,
         responses={
             200: OpenApiResponse(response=HomeChoreNoteOutputSerializer, description="수정된 메모."),
-            400: OpenApiResponse(description="유효성 검사 실패."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="작성자만 수정 가능."),
-            404: OpenApiResponse(description="해당 집안일 또는 메모를 찾을 수 없음."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="유효성 검사 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="작성자만 수정 가능."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="해당 집안일 또는 메모를 찾을 수 없음."),
         },
-        examples=[OpenApiExample("메모 수정", value={"content": "수정된 내용"}, request_only=True)],
+        examples=[
+            OpenApiExample("메모 수정", value={"content": "수정된 내용"}, request_only=True),
+            OpenApiExample(
+                "수정 성공",
+                value={
+                    "id": 1,
+                    "author": {
+                        "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                        "name": "홍길동",
+                        "profile_image": 3,
+                    },
+                    "content": "수정된 내용",
+                    "created_at": "2026-05-12T10:00:00Z",
+                    "updated_at": "2026-05-12T11:30:00Z",
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            error_example(code="invalid", message="content 는 200자 이하여야 합니다.", name="내용 길이 초과"),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="permission_denied",
+                message="본인이 작성한 메모만 수정할 수 있습니다.",
+                name="작성자 아님",
+            ),
+            error_example(code="not_found", message="메모를 찾을 수 없습니다.", name="메모 미존재"),
+        ],
     )
     def patch(self, request: Request, home_chore_id: int, note_id: int) -> Response:
         serializer = HomeChoreNoteUpdateSerializer(data=request.data)
@@ -624,10 +939,19 @@ class HomeChoreNoteDetailView(APIView):
         ],
         responses={
             204: OpenApiResponse(description="삭제 완료 — 응답 본문 없음."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
-            403: OpenApiResponse(description="작성자만 삭제 가능."),
-            404: OpenApiResponse(description="해당 집안일 또는 메모를 찾을 수 없음."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="작성자만 삭제 가능."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="해당 집안일 또는 메모를 찾을 수 없음."),
         },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="permission_denied",
+                message="본인이 작성한 메모만 삭제할 수 있습니다.",
+                name="작성자 아님",
+            ),
+            error_example(code="not_found", message="메모를 찾을 수 없습니다.", name="메모 미존재"),
+        ],
     )
     def delete(self, request: Request, home_chore_id: int, note_id: int) -> Response:
         try:
@@ -667,8 +991,20 @@ class StarterPackListView(APIView):
                 response=StarterPackSerializer(many=True),
                 description="스타터팩 메타 배열.",
             ),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
+        examples=[
+            OpenApiExample(
+                "스타터팩 목록",
+                value=[
+                    {"id": 1, "name": "기본 청소", "description": "신혼/1인 가구용 기본 팩"},
+                    {"id": 2, "name": "패밀리", "description": "아이 있는 가정용 확장 팩"},
+                ],
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+        ],
     )
     def get(self, request: Request) -> Response:
         packs = selectors.get_starter_packs()
@@ -696,8 +1032,40 @@ class StarterPackChoreListView(APIView):
         ],
         responses={
             200: OpenApiResponse(response=ChoreOutputSerializer(many=True), description="집안일 배열."),
-            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
         },
+        examples=[
+            OpenApiExample(
+                "스타터팩 집안일 목록",
+                value=[
+                    {
+                        "id": 1,
+                        "category": 3,
+                        "name": "거실 청소",
+                        "description": "주 1회",
+                        "repeat_days": [0, 3],
+                        "repeat_days_label": ["월", "목"],
+                        "difficulty": 2,
+                        "difficulty_label": "쉬움",
+                        "point": 80,
+                    },
+                    {
+                        "id": 2,
+                        "category": 5,
+                        "name": "분리수거",
+                        "description": "매주 화요일",
+                        "repeat_days": [1],
+                        "repeat_days_label": ["화"],
+                        "difficulty": 3,
+                        "difficulty_label": "중간",
+                        "point": 120,
+                    },
+                ],
+                response_only=True,
+                status_codes=["200"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+        ],
     )
     def get(self, request: Request, starter_pack_id: int) -> Response:
         chores = selectors.get_starter_pack_chores(starter_pack_id)
