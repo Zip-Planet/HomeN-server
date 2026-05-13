@@ -698,6 +698,300 @@ class TestHomeChoreListViewGet:
         assert res.status_code == 401
 
 
+def _chore_detail_url(home_chore_id: int) -> str:
+    return f"/api/v1/homes/mine/chores/{home_chore_id}/"
+
+
+class TestHomeChoreDetailViewGet:
+    def test_본인_집_chore_조회_200(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(name="거실 청소", starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        assert res.data["id"] == home_chore.pk
+        assert res.data["name"] == "거실 청소"
+
+    def test_응답에_point_difficulty_label_repeat_days_label_포함(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(
+            starter_pack=None,
+            repeat_days=[0, 5],
+            difficulty=Chore.Difficulty.MEDIUM_HIGH,  # 중상 → '중간' / 160P
+        )
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        assert res.data["difficulty_label"] == "중간"
+        assert res.data["point"] == 160
+        assert res.data["repeat_days_label"] == ["월", "토"]
+
+    def test_다른_집_chore_는_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        other_home = HomeFactory()
+        other_chore = ChoreFactory(starter_pack=None)
+        other_home_chore = HomeChoreFactory(home=other_home, chore=other_chore)
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(other_home_chore.pk))
+
+        assert res.status_code == 404
+
+    def test_존재하지_않는_chore_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(99999))
+
+        assert res.status_code == 404
+
+    def test_속한_집_없으면_404(self):
+        user = UserFactory()
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(1))
+
+        assert res.status_code == 404
+
+    def test_미인증_401(self):
+        res = APIClient().get(_chore_detail_url(1))
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreDetailViewPatch:
+    def test_커스텀_chore_부분수정_200_in_place(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, name="기존", difficulty=Chore.Difficulty.LOW)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+        original_chore_id = chore.pk
+
+        res = client.patch(
+            _chore_detail_url(home_chore.pk),
+            {"name": "수정됨", "difficulty": Chore.Difficulty.HIGH},
+            format="json",
+        )
+
+        assert res.status_code == 200
+        home_chore.refresh_from_db()
+        chore.refresh_from_db()
+        # 커스텀 chore 는 in-place 업데이트 — 동일 PK 유지
+        assert home_chore.chore_id == original_chore_id
+        assert chore.name == "수정됨"
+        assert chore.difficulty == Chore.Difficulty.HIGH
+
+    def test_스타터팩_chore_수정시_copy_on_write(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        starter_pack = StarterPackFactory()
+        preset_chore = ChoreFactory(
+            starter_pack=starter_pack,
+            name="프리셋 청소",
+            difficulty=Chore.Difficulty.LOW,
+        )
+        home_chore = HomeChoreFactory(home=home, chore=preset_chore)
+        # 다른 집도 같은 preset 을 쓰는 상황을 만들어 영향 0 을 검증
+        other_home = HomeFactory()
+        other_home_chore = HomeChoreFactory(home=other_home, chore=preset_chore)
+
+        client = auth_client(user)
+        res = client.patch(
+            _chore_detail_url(home_chore.pk),
+            {"name": "내 집 청소", "difficulty": Chore.Difficulty.HIGH},
+            format="json",
+        )
+
+        assert res.status_code == 200
+        home_chore.refresh_from_db()
+        preset_chore.refresh_from_db()
+        other_home_chore.refresh_from_db()
+
+        # 원본 preset Chore 는 보존
+        assert preset_chore.name == "프리셋 청소"
+        assert preset_chore.difficulty == Chore.Difficulty.LOW
+        assert preset_chore.starter_pack_id == starter_pack.pk
+
+        # 내 집 HomeChore 는 새 Chore 로 교체 (copy-on-write)
+        assert home_chore.chore_id != preset_chore.pk
+        assert home_chore.chore.starter_pack_id is None
+        assert home_chore.chore.name == "내 집 청소"
+        assert home_chore.chore.difficulty == Chore.Difficulty.HIGH
+
+        # 다른 집의 연결은 그대로
+        assert other_home_chore.chore_id == preset_chore.pk
+
+    def test_관리자_아닌_구성원도_수정_가능_200(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        chore = ChoreFactory(starter_pack=None, name="기존")
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(member)
+
+        res = client.patch(
+            _chore_detail_url(home_chore.pk),
+            {"name": "구성원이 수정"},
+            format="json",
+        )
+
+        assert res.status_code == 200
+        chore.refresh_from_db()
+        assert chore.name == "구성원이 수정"
+
+    def test_다른_집_chore_수정_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        other_home = HomeFactory()
+        other_chore = ChoreFactory(starter_pack=None, name="원래")
+        other_home_chore = HomeChoreFactory(home=other_home, chore=other_chore)
+        client = auth_client(user)
+
+        res = client.patch(
+            _chore_detail_url(other_home_chore.pk),
+            {"name": "침입"},
+            format="json",
+        )
+
+        assert res.status_code == 404
+        other_chore.refresh_from_db()
+        assert other_chore.name == "원래"
+
+    def test_빈_바디_200_변경없음(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, name="그대로")
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(_chore_detail_url(home_chore.pk), {}, format="json")
+
+        assert res.status_code == 200
+        chore.refresh_from_db()
+        assert chore.name == "그대로"
+
+    def test_유효성_실패_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.patch(
+            _chore_detail_url(home_chore.pk),
+            {"difficulty": 9999},
+            format="json",
+        )
+
+        assert res.status_code == 400
+
+    def test_미인증_401(self):
+        res = APIClient().patch(_chore_detail_url(1), {"name": "x"}, format="json")
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreDetailViewDelete:
+    def test_커스텀_chore_삭제_204(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.delete(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 204
+        assert not HomeChore.objects.filter(pk=home_chore.pk).exists()
+        # 원본 Chore 는 보존 (orphan 허용 — 별도 정책 없음)
+        assert Chore.objects.filter(pk=chore.pk).exists()
+
+    def test_스타터팩_chore_삭제_204_원본_보존(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        starter_pack = StarterPackFactory()
+        preset_chore = ChoreFactory(starter_pack=starter_pack, name="프리셋")
+        home_chore = HomeChoreFactory(home=home, chore=preset_chore)
+
+        other_home = HomeFactory()
+        other_home_chore = HomeChoreFactory(home=other_home, chore=preset_chore)
+
+        client = auth_client(user)
+        res = client.delete(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 204
+        # HomeChore 만 사라짐
+        assert not HomeChore.objects.filter(pk=home_chore.pk).exists()
+        # 원본 preset Chore 는 보존
+        preset_chore.refresh_from_db()
+        assert preset_chore.name == "프리셋"
+        # 다른 집의 연결도 그대로
+        assert HomeChore.objects.filter(pk=other_home_chore.pk).exists()
+
+    def test_관리자_아닌_구성원도_삭제_가능_204(self):
+        admin = UserFactory()
+        member = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(member)
+
+        res = client.delete(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 204
+        assert not HomeChore.objects.filter(pk=home_chore.pk).exists()
+
+    def test_다른_집_chore_삭제_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+
+        other_home = HomeFactory()
+        other_chore = ChoreFactory(starter_pack=None)
+        other_home_chore = HomeChoreFactory(home=other_home, chore=other_chore)
+        client = auth_client(user)
+
+        res = client.delete(_chore_detail_url(other_home_chore.pk))
+
+        assert res.status_code == 404
+        assert HomeChore.objects.filter(pk=other_home_chore.pk).exists()
+
+    def test_미인증_401(self):
+        res = APIClient().delete(_chore_detail_url(1))
+
+        assert res.status_code == 401
+
+
 def _note_list_url(home_chore_id: int) -> str:
     return f"/api/v1/homes/mine/chores/{home_chore_id}/notes/"
 

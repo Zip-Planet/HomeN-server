@@ -386,6 +386,70 @@ def _get_home_chore_in_user_home(*, user: User, home_chore_id: int) -> HomeChore
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
 
 
+def update_home_chore(
+    *, user: User, home_chore_id: int, fields: dict[str, Any]
+) -> HomeChore:
+    """HomeChore 의 chore 메타를 부분 수정합니다 (구성원 누구나).
+
+    스타터팩에서 비롯된 chore 는 **copy-on-write** — 프리셋 Chore 는 보존되고,
+    본인 집 전용 사본(`starter_pack=None`)을 새로 만들어 `HomeChore.chore` 를
+    교체합니다. 커스텀 chore 는 in-place 업데이트합니다.
+
+    Args:
+        user: 호출 유저.
+        home_chore_id: 수정할 HomeChore PK.
+        fields: 변경할 필드의 부분 dict (category/name/description/repeat_days/difficulty).
+            지원되지 않는 키는 무시합니다. 빈 dict 면 변경 없이 그대로 반환합니다.
+
+    Returns:
+        최신 상태의 HomeChore 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 chore 가 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    chore = home_chore.chore
+
+    editable = ("category", "name", "description", "repeat_days", "difficulty")
+    updates = {k: v for k, v in fields.items() if k in editable}
+
+    if not updates:
+        return home_chore
+
+    with transaction.atomic():
+        if chore.starter_pack_id is not None:
+            new_chore = Chore.objects.create(
+                starter_pack=None,
+                category=updates.get("category", chore.category),
+                name=updates.get("name", chore.name),
+                description=updates.get("description", chore.description),
+                repeat_days=updates.get("repeat_days", chore.repeat_days),
+                difficulty=updates.get("difficulty", chore.difficulty),
+            )
+            home_chore.chore = new_chore
+            home_chore.save(update_fields=["chore"])
+        else:
+            for key, value in updates.items():
+                setattr(chore, key, value)
+            chore.save(update_fields=list(updates.keys()))
+
+    home_chore.refresh_from_db()
+    return home_chore
+
+
+def delete_home_chore(*, user: User, home_chore_id: int) -> None:
+    """HomeChore 링크를 제거합니다 (구성원 누구나, 원본 Chore 는 보존).
+
+    스타터팩 chore 는 다른 집에서도 살아있어야 하므로 원본 Chore 는 절대 삭제하지
+    않습니다. 커스텀 chore 도 동일하게 link 만 제거합니다.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 chore 가 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    home_chore.delete()
+
+
 def create_home_chore_note(*, user: User, home_chore_id: int, content: str) -> HomeChoreNote:
     """집안일에 메모를 추가합니다 (구성원 누구나).
 

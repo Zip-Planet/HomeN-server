@@ -81,6 +81,26 @@ def get_home_chores(home: Home) -> QuerySet[HomeChore]:
     return HomeChore.objects.select_related("chore").filter(home=home).order_by("id")
 
 
+def get_user_home_chore(user: User, home_chore_id: int) -> HomeChore | None:
+    """유저의 집에 속한 HomeChore 한 건을 반환합니다. 없거나 다른 집이면 None.
+
+    Args:
+        user: 호출 유저.
+        home_chore_id: 조회할 HomeChore PK.
+
+    Returns:
+        본인 집의 HomeChore (chore prefetch 포함) 또는 None.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        return None
+    return (
+        HomeChore.objects.select_related("chore")
+        .filter(id=home_chore_id, home=membership.home)
+        .first()
+    )
+
+
 def get_starter_pack_chores(starter_pack_id: int) -> QuerySet[Chore]:
     """특정 스타터팩의 집안일 목록을 반환합니다.
 
