@@ -195,6 +195,27 @@ class ProfileImageIdSerializer(serializers.Serializer):
     )
 
 
+# ── 닉네임 중복 확인 ───────────────────────────────────────────────────────────
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample("사용 가능", value={"is_available": True}, response_only=True),
+        OpenApiExample("이미 사용 중", value={"is_available": False}, response_only=True),
+    ]
+)
+class NicknameAvailabilitySerializer(serializers.Serializer):
+    """닉네임 사용 가능 여부 응답.
+
+    온보딩 화면에서 PATCH `/users/me/` 전에 사전 검증하는 데 사용된다.
+    형식 검증(특수문자 등) 은 PATCH 시점에 수행되며, 본 응답은 **존재 여부만** 반영한다.
+    """
+
+    is_available = serializers.BooleanField(
+        help_text="닉네임을 사용할 수 있으면 True (다른 유저가 점유하지 않음).",
+    )
+
+
 # ── 로그아웃 ──────────────────────────────────────────────────────────────────
 
 

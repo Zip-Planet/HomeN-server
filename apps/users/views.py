@@ -27,6 +27,7 @@ from apps.users.serializers import (
     AppleLoginSerializer,
     KakaoLoginSerializer,
     LogoutSerializer,
+    NicknameAvailabilitySerializer,
     ProfileImageIdSerializer,
     TokenOutputSerializer,
     UserProfileOutputSerializer,
@@ -300,3 +301,36 @@ class ProfileImageListView(APIView):
     )
     def get(self, request: Request) -> Response:
         return Response(selectors.get_profile_image_choices())
+
+
+# ── 닉네임 중복 확인 ───────────────────────────────────────────────────────────
+
+
+class NicknameAvailabilityView(APIView):
+    """온보딩 시 닉네임 사전 중복 확인.
+
+    PATCH `/users/me/` 호출 전에 `is_available` 을 미리 보여주기 위함.
+    형식 검증(특수문자 등) 은 PATCH 단계에 위임한다 — 본 응답은 존재 여부만 반영.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Users"],
+        summary="닉네임 사용 가능 여부 확인",
+        description=(
+            "주어진 닉네임을 다른 유저가 점유 중인지 확인한다.\n\n"
+            "- 사용 가능 → `200 + {\"is_available\": true}`\n"
+            "- 이미 사용 중 → `200 + {\"is_available\": false}`\n"
+            "- 형식 검증(한글·영문·숫자 1~8자) 은 본 API 가 아니라 `PATCH /users/me/` 시점에 수행.\n"
+        ),
+        responses={
+            200: OpenApiResponse(
+                response=NicknameAvailabilitySerializer,
+                description="사용 가능 여부.",
+            ),
+            401: OpenApiResponse(description="access 토큰 누락/만료."),
+        },
+    )
+    def get(self, request: Request, nickname: str) -> Response:
+        return Response({"is_available": selectors.is_nickname_available(nickname)})

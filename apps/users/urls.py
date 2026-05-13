@@ -13,7 +13,14 @@ from django.urls import path
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from apps.users.views import AppleLoginView, KakaoLoginView, LogoutView, ProfileImageListView, UserMeView
+from apps.users.views import (
+    AppleLoginView,
+    KakaoLoginView,
+    LogoutView,
+    NicknameAvailabilityView,
+    ProfileImageListView,
+    UserMeView,
+)
 
 # SimpleJWT 의 TokenRefreshView 는 외부 라이브러리이므로 swagger 메타데이터를 데코레이터로 덧붙인다.
 # - tags: 본 프로젝트의 "Auth" 그룹으로 묶기 위해 명시.
@@ -54,4 +61,5 @@ auth_urlpatterns = [
 user_urlpatterns = [
     path("me/", UserMeView.as_view(), name="user-me"),
     path("profile-images/", ProfileImageListView.as_view(), name="profile-image-list"),
+    path("nicknames/<str:nickname>/", NicknameAvailabilityView.as_view(), name="nickname-availability"),
 ]
