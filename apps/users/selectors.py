@@ -1,4 +1,4 @@
-from apps.users.models import SocialAccount, UserProfileImage
+from apps.users.models import SocialAccount, User, UserProfileImage
 
 
 def get_social_account(provider: str, provider_id: str) -> SocialAccount | None:
@@ -21,3 +21,15 @@ def get_profile_image_choices() -> list[dict]:
         [{"id": 1}, {"id": 2}, ...] 형식의 딕셔너리 목록.
     """
     return [{"id": value} for value, _ in UserProfileImage.choices]
+
+
+def is_nickname_available(name: str) -> bool:
+    """닉네임이 사용 가능한지 (다른 유저에 의해 점유되지 않았는지) 반환합니다.
+
+    Args:
+        name: 검사할 닉네임 문자열.
+
+    Returns:
+        해당 닉네임이 사용 가능하면 True, 이미 사용 중이면 False.
+    """
+    return not User.objects.filter(name=name).exists()

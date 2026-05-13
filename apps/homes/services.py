@@ -4,7 +4,7 @@ from typing import Any
 
 from django.db import transaction
 
-from apps.homes.models import Chore, Home, HomeChore, HomeMember, Reward
+from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeMember, Reward
 from apps.homes.selectors import get_user_membership
 from apps.users.models import User
 
@@ -41,6 +41,22 @@ class HomeChoreNotFoundError(HomeError):
     """집안일을 찾을 수 없을 때 발생합니다."""
 
 
+class StarterPackNotFoundError(HomeError):
+    """스타터팩 ID 에 해당하는 chore 가 없을 때 발생합니다."""
+
+
+class AmbiguousChoreInputError(HomeError):
+    """`starter_pack_id` 와 커스텀 `chores` 가 동시에 지정되었을 때 발생합니다."""
+
+
+class HomeChoreNoteNotFoundError(HomeError):
+    """집안일 메모를 찾을 수 없을 때 발생합니다."""
+
+
+class NotNoteAuthorError(HomeError):
+    """메모 작성자가 아닌 유저가 수정/삭제를 시도할 때 발생합니다."""
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -71,26 +87,36 @@ def create_home(
     image_id: int,
     chores: list[dict[str, Any]],
     rewards: list[dict[str, Any]],
+    starter_pack_id: int | None = None,
 ) -> Home:
     """집을 생성하고 요청 유저를 관리자로 등록합니다.
 
-    집안일 목록과 리워드 목록을 함께 받아 하나의 트랜잭션으로 처리합니다.
-    빈 리스트를 전달하면 해당 항목은 생성하지 않습니다.
+    집안일·리워드를 함께 받아 하나의 트랜잭션으로 처리합니다. 집안일 입력은
+    다음 둘 중 하나만 허용합니다 (둘 다 비어 있어도 됨):
+    - `starter_pack_id`: 해당 스타터팩의 chore 들을 일괄로 HomeChore 로 연결.
+    - `chores`: 커스텀 chore 정의 배열 (각 dict 가 Chore 신규 생성으로 이어짐).
 
     Args:
         user: 집을 생성하는 User 인스턴스.
         name: 집 이름.
         image_id: 선택된 집 이미지 enum 값.
-        chores: [{"name": ..., "image": ..., "points": ..., "repeat_days": ..., "difficulty": ...}, ...]
-            형식의 집안일 목록. 빈 리스트면 생성하지 않습니다.
+        chores: 커스텀 집안일 데이터 목록. 빈 리스트면 생성하지 않습니다.
         rewards: [{"name": ..., "goal_point": ...}, ...] 형식의 리워드 목록. 빈 리스트면 생성하지 않습니다.
+        starter_pack_id: 적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들을 일괄 연결.
 
     Returns:
         생성된 Home 인스턴스.
 
     Raises:
         AlreadyHasHomeError: 이미 집이 있는 경우.
+        AmbiguousChoreInputError: `starter_pack_id` 와 커스텀 `chores` 가 동시에 지정된 경우.
+        StarterPackNotFoundError: `starter_pack_id` 에 해당하는 chore 가 없는 경우.
     """
+    if starter_pack_id is not None and chores:
+        raise AmbiguousChoreInputError(
+            "`starter_pack_id` 와 `chores` 는 동시에 지정할 수 없습니다."
+        )
+
     if HomeMember.objects.filter(user=user).exists():
         raise AlreadyHasHomeError("이미 속한 집이 있습니다.")
 
@@ -103,7 +129,9 @@ def create_home(
         )
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)
 
-        if chores:
+        if starter_pack_id is not None:
+            _apply_starter_pack_to_home(home=home, starter_pack_id=starter_pack_id)
+        elif chores:
             chore_objs = Chore.objects.bulk_create([
                 Chore(
                     category=c["category"],
@@ -122,6 +150,36 @@ def create_home(
             )
 
     return home
+
+
+def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[HomeChore]:
+    """스타터팩의 chore 들을 주어진 집에 HomeChore 로 일괄 연결합니다.
+
+    이미 같은 (home, chore) 쌍이 있으면 건너뜁니다 (멱등 — 동일 팩 재적용 안전).
+
+    Args:
+        home: 대상 Home 인스턴스.
+        starter_pack_id: 적용할 StarterPack PK.
+
+    Returns:
+        새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
+
+    Raises:
+        StarterPackNotFoundError: 해당 스타터팩에 chore 가 하나도 없는 경우.
+    """
+    pack_chores = list(Chore.objects.filter(starter_pack_id=starter_pack_id))
+    if not pack_chores:
+        raise StarterPackNotFoundError(
+            f"스타터팩(id={starter_pack_id}) 또는 해당 집안일을 찾을 수 없습니다."
+        )
+
+    existing_chore_ids = set(
+        HomeChore.objects.filter(home=home, chore__in=pack_chores).values_list("chore_id", flat=True)
+    )
+    to_create = [HomeChore(home=home, chore=c) for c in pack_chores if c.id not in existing_chore_ids]
+    if not to_create:
+        return []
+    return HomeChore.objects.bulk_create(to_create)
 
 
 # ──────────────────────────────────────────
@@ -248,9 +306,9 @@ def transfer_admin(*, user: User, target_uid: str) -> None:
 
 
 def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[HomeChore]:
-    """유저의 집에 집안일을 추가합니다.
+    """유저의 집에 커스텀 집안일을 추가합니다.
 
-    단건 및 복수 생성 모두 지원합니다.
+    단건 및 복수 생성 모두 지원합니다. 스타터팩 일괄 적용은 `apply_starter_pack` 을 사용.
 
     Args:
         user: 요청한 User 인스턴스.
@@ -260,7 +318,7 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
         생성된 HomeChore 인스턴스 목록.
 
     Raises:
-        NotHomeAdminError: 요청자가 관리자가 아닌 경우.
+        HomeNotFoundError: 요청자가 집에 속하지 않은 경우.
     """
     membership = get_user_membership(user)
     if membership is None:
@@ -284,36 +342,99 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
     return home_chore_objs
 
 
-# ──────────────────────────────────────────
-# 집안일 메모 수정
-# ──────────────────────────────────────────
+def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
+    """유저의 집에 스타터팩 chore 들을 일괄 등록합니다.
 
-
-def update_home_chore_memo(*, user: User, home_chore_id: int, memo: str) -> HomeChore:
-    """집안일 메모를 수정합니다.
+    이미 동일 (home, chore) 쌍이 있으면 건너뛰어 멱등성을 보장합니다.
 
     Args:
         user: 요청한 User 인스턴스.
-        home_chore_id: 수정할 HomeChore PK.
-        memo: 변경할 메모 내용.
+        starter_pack_id: 적용할 StarterPack PK.
 
     Returns:
-        수정된 HomeChore 인스턴스.
+        새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
 
     Raises:
-        HomeChoreNotFoundError: 해당 집안일이 유저의 집에 존재하지 않는 경우.
+        HomeNotFoundError: 요청자가 집에 속하지 않은 경우.
+        StarterPackNotFoundError: 해당 스타터팩에 chore 가 하나도 없는 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeNotFoundError("속한 집이 없습니다.")
+
+    with transaction.atomic():
+        return _apply_starter_pack_to_home(home=membership.home, starter_pack_id=starter_pack_id)
+
+
+# ──────────────────────────────────────────
+# 집안일 메모 (HomeChoreNote, 1:N)
+# ──────────────────────────────────────────
+
+
+def _get_home_chore_in_user_home(*, user: User, home_chore_id: int) -> HomeChore:
+    """유저의 집에 속한 HomeChore 를 찾고, 없으면 HomeChoreNotFoundError 를 발생.
+
+    notes 화면이 다른 집의 chore 를 노출하지 못하도록 모든 메모 CRUD 는 본 헬퍼를
+    먼저 통과해야 한다.
     """
     membership = get_user_membership(user)
     if membership is None:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
-
     try:
-        home_chore = HomeChore.objects.select_related("chore").get(
-            id=home_chore_id, home=membership.home
-        )
+        return HomeChore.objects.get(id=home_chore_id, home=membership.home)
     except HomeChore.DoesNotExist:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
 
-    home_chore.memo = memo
-    home_chore.save(update_fields=["memo"])
-    return home_chore
+
+def create_home_chore_note(*, user: User, home_chore_id: int, content: str) -> HomeChoreNote:
+    """집안일에 메모를 추가합니다 (구성원 누구나).
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    return HomeChoreNote.objects.create(home_chore=home_chore, author=user, content=content)
+
+
+def update_home_chore_note(
+    *, user: User, home_chore_id: int, note_id: int, content: str
+) -> HomeChoreNote:
+    """메모를 수정합니다. **작성자만** 가능.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+        HomeChoreNoteNotFoundError: 해당 메모가 존재하지 않거나 다른 집안일의 것인 경우.
+        NotNoteAuthorError: 작성자가 아닌 유저가 호출한 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    try:
+        note = HomeChoreNote.objects.get(id=note_id, home_chore=home_chore)
+    except HomeChoreNote.DoesNotExist:
+        raise HomeChoreNoteNotFoundError("메모를 찾을 수 없습니다.")
+
+    if note.author_id != user.id:
+        raise NotNoteAuthorError("본인이 작성한 메모만 수정할 수 있습니다.")
+
+    note.content = content
+    note.save(update_fields=["content", "updated_at"])
+    return note
+
+
+def delete_home_chore_note(*, user: User, home_chore_id: int, note_id: int) -> None:
+    """메모를 삭제합니다. **작성자만** 가능.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아닌 경우.
+        HomeChoreNoteNotFoundError: 해당 메모가 존재하지 않거나 다른 집안일의 것인 경우.
+        NotNoteAuthorError: 작성자가 아닌 유저가 호출한 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+    try:
+        note = HomeChoreNote.objects.get(id=note_id, home_chore=home_chore)
+    except HomeChoreNote.DoesNotExist:
+        raise HomeChoreNoteNotFoundError("메모를 찾을 수 없습니다.")
+
+    if note.author_id != user.id:
+        raise NotNoteAuthorError("본인이 작성한 메모만 삭제할 수 있습니다.")
+
+    note.delete()

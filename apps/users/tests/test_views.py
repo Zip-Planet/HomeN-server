@@ -296,3 +296,38 @@ class TestLogoutView:
         response = api_client.post(self.url, {}, format="json")
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.django_db
+class TestNicknameAvailabilityView:
+    def _url(self, nickname: str) -> str:
+        return f"/api/v1/users/nicknames/{nickname}/"
+
+    def test_사용_가능_닉네임_true(self, auth_client):
+        res = auth_client.get(self._url("미사용닉네임"))
+
+        assert res.status_code == status.HTTP_200_OK
+        assert res.data == {"is_available": True}
+
+    def test_점유된_닉네임_false(self, auth_client):
+        UserFactory(name="홍길동")
+
+        res = auth_client.get(self._url("홍길동"))
+
+        assert res.status_code == status.HTTP_200_OK
+        assert res.data == {"is_available": False}
+
+    def test_본인이_사용_중인_닉네임도_false(self, api_client):
+        """PATCH 전 사전 검사라 본인 점유 여부도 점유로 본다 (UX 일관성)."""
+        user = UserFactory(name="홍길동")
+        api_client.force_authenticate(user=user)
+
+        res = api_client.get(self._url("홍길동"))
+
+        assert res.status_code == status.HTTP_200_OK
+        assert res.data == {"is_available": False}
+
+    def test_미인증_401(self, api_client):
+        res = api_client.get(self._url("아무거나"))
+
+        assert res.status_code == status.HTTP_401_UNAUTHORIZED
