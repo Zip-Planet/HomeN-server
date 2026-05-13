@@ -377,10 +377,37 @@ class HomeTransferAdminView(APIView):
 
 
 class HomeChoreListView(APIView):
-    """집안일 추가 (관리자 전용).
+    """집안일 목록 조회 + 추가.
 
-    단건/복수 등록을 동일한 `chores` 배열로 처리한다 — 응답도 항상 배열이다.
+    - `GET`: 현재 유저가 속한 집의 집안일 목록을 반환 (속한 집 없으면 404).
+    - `POST`: 관리자 전용. 단건/복수 등록을 동일한 `chores` 배열로 처리한다.
     """
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집의 집안일 목록 조회",
+        description=(
+            "현재 유저가 속한 집의 집안일을 PK 오름차순으로 반환한다.\n\n"
+            "- 비어 있는 집(아직 집안일을 추가하지 않은 집) 도 200 + 빈 배열로 응답한다.\n"
+            "- 응답 형식은 `POST` 응답의 단일 원소와 동일 (`HomeChoreOutputSerializer`).\n"
+            "  난이도 3단계 라벨/포인트/요일 한글 라벨 포함.\n"
+            "- 다른 집의 집안일은 노출되지 않는다.\n"
+        ),
+        responses={
+            200: OpenApiResponse(
+                response=HomeChoreOutputSerializer(many=True),
+                description="집안일 배열 (비어 있을 수 있음).",
+            ),
+            401: OpenApiResponse(description="access 토큰 누락/만료."),
+            404: OpenApiResponse(description="속한 집 없음."),
+        },
+    )
+    def get(self, request: Request) -> Response:
+        home = selectors.get_user_home(request.user)
+        if home is None:
+            raise NotFound("속한 집이 없습니다.")
+        home_chores = selectors.get_home_chores(home)
+        return Response(HomeChoreOutputSerializer(home_chores, many=True).data)
 
     @extend_schema(
         tags=["Homes"],
