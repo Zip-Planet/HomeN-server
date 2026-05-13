@@ -21,6 +21,7 @@ from apps.users.views import (
     ProfileImageListView,
     UserMeView,
 )
+from common.error_responses import ErrorResponseSerializer, error_example
 
 # SimpleJWT 의 TokenRefreshView 는 외부 라이브러리이므로 swagger 메타데이터를 데코레이터로 덧붙인다.
 # - tags: 본 프로젝트의 "Auth" 그룹으로 묶기 위해 명시.
@@ -42,11 +43,32 @@ TokenRefreshView = extend_schema(
         200: OpenApiResponse(
             description="신규 access 토큰 (회전 설정 시 refresh 도 함께 반환).",
         ),
-        400: OpenApiResponse(description="refresh 형식 오류."),
-        401: OpenApiResponse(description="refresh 만료/위조/블랙리스트."),
+        400: OpenApiResponse(response=ErrorResponseSerializer, description="refresh 형식 오류."),
+        401: OpenApiResponse(response=ErrorResponseSerializer, description="refresh 만료/위조/블랙리스트."),
     },
     examples=[
-        OpenApiExample("정상 요청", value={"refresh": "eyJhbGciOiJIUzI1NiIs..."}, request_only=True),
+        OpenApiExample("정상 요청", value={"refresh": "eyJhbGciOiJIUzI1NiIs...refresh..."}, request_only=True),
+        OpenApiExample(
+            "갱신 성공 (회전 OFF)",
+            value={"access": "eyJhbGciOiJIUzI1NiIs...new_access..."},
+            response_only=True,
+            status_codes=["200"],
+        ),
+        OpenApiExample(
+            "갱신 성공 (회전 ON)",
+            value={
+                "access": "eyJhbGciOiJIUzI1NiIs...new_access...",
+                "refresh": "eyJhbGciOiJIUzI1NiIs...new_refresh...",
+            },
+            response_only=True,
+            status_codes=["200"],
+        ),
+        error_example(code="invalid", message="refresh 필드는 필수입니다.", name="refresh 누락"),
+        error_example(
+            code="token_not_valid",
+            message="Token is invalid or expired",
+            name="만료/블랙리스트",
+        ),
     ],
 )(TokenRefreshView)
 
