@@ -3,6 +3,8 @@ from pathlib import Path
 
 import environ
 
+from apps.users.admin_seeds import SEED_ADMINS
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
@@ -91,6 +93,11 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+_ADMIN_LINES = "\n".join(
+    f"- {admin['name']} — uid: `{admin['uid']}`, pw: `{admin['password']}`"
+    for admin in SEED_ADMINS
+)
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "HomeN API",
     "DESCRIPTION": (
@@ -106,9 +113,16 @@ SPECTACULAR_SETTINGS = {
         "## 규칙\n"
         "- 한 유저는 단 하나의 집에만 속한다.\n"
         "- 집당 관리자는 1명. 관리자만 집 삭제·집안일 등록·양도 가능.\n"
-        "- 관리자는 직접 탈퇴/나가기가 불가하며, 양도 또는 집 삭제 후 가능.\n"
+        "- 관리자는 직접 탈퇴/나가기가 불가하며, 양도 또는 집 삭제 후 가능.\n\n"
+        "## Dev 어드민 계정\n"
+        "- Django admin: `http://3.36.23.29/admin/`\n"
+        f"{_ADMIN_LINES}\n"
+        "- dev 전용.\n"
     ),
     "VERSION": "1.0.0",
+    "SERVERS": [
+        {"url": "http://3.36.23.29", "description": "Dev"},
+    ],
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SECURITY": [{"BearerAuth": []}],

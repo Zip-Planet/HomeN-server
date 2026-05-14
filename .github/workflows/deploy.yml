@@ -37,6 +37,7 @@ jobs:
             docker compose -f docker-compose.dev.yml up --build -d
             sleep 10
             docker compose -f docker-compose.dev.yml exec -T app uv run python manage.py migrate
+            docker compose -f docker-compose.dev.yml exec -T app uv run python manage.py seed_admins
 
       - name: 보안그룹에서 Runner IP 제거
         if: always()
