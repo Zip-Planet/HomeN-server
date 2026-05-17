@@ -211,6 +211,41 @@ class HomeChoreNote(models.Model):
         return f"home_chore_note:{self.pk}"
 
 
+class ChoreCompletion(models.Model):
+    """집안일 완료 이력 (집 단위, 날짜별 1건).
+
+    같은 HomeChore 에 대해 같은 날짜 1건만 기록한다 — 누가 먼저 끝냈는지가 그
+    날의 완료자(`completed_by`) 로 남고, 그 후 이중 등록은 unique_together 로
+    차단된다. 완료자 유저가 탈퇴해도 이력 자체는 보존되어야 하므로 FK 는
+    `SET_NULL` 이다.
+
+    Attributes:
+        home_chore: 대상 HomeChore.
+        completed_by: 완료를 기록한 User (탈퇴 시 NULL).
+        date: 완료 기준 날짜 (요일/주 윈도우 매칭에 사용).
+        created_at: 기록 일시.
+    """
+
+    home_chore = models.ForeignKey(HomeChore, on_delete=models.CASCADE, related_name="completions")
+    completed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="chore_completions",
+    )
+    date = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chore_completions"
+        unique_together = [("home_chore", "date")]
+        indexes = [models.Index(fields=["home_chore", "date"])]
+
+    def __str__(self) -> str:
+        return f"chore_completion:{self.pk}"
+
+
 class Reward(models.Model):
     """리워드 모델.
 
