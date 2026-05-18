@@ -3,6 +3,7 @@ import factory
 from apps.homes.models import (
     Chore,
     ChoreCategory,
+    ChoreCompletion,
     Home,
     HomeChore,
     HomeImageType,
@@ -67,3 +68,11 @@ class RewardFactory(factory.django.DjangoModelFactory):
 
     class Meta:
         model = Reward
+
+
+class ChoreCompletionFactory(factory.django.DjangoModelFactory):
+    home_chore = factory.SubFactory(HomeChoreFactory)
+    completed_by = factory.SubFactory(UserFactory)
+
+    class Meta:
+        model = ChoreCompletion

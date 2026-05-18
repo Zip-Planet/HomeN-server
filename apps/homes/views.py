@@ -26,6 +26,7 @@ from rest_framework.views import APIView
 from apps.homes import selectors, services
 from apps.homes.serializers import (
     ChoreOutputSerializer,
+    HomeChoreDetailOutputSerializer,
     HomeChoreListCreateSerializer,
     HomeChoreNoteCreateSerializer,
     HomeChoreNoteOutputSerializer,
@@ -1130,7 +1131,21 @@ class HomeChoreDetailView(APIView):
             "| path | `home_chore_id` | integer | ✓ | 조회할 HomeChore PK |\n\n"
             "## 📤 응답 (200)\n"
             + _OUTPUT_FIELDS_TABLE
-            + "## ❌ 에러\n"
+            + "### 이번 주 진행상태 (`weekly_progress`)\n"
+            "월 시작 ~ 일 종료, 7개 원소(0=월 ~ 6=일) 배열. 완료는 **집(home) 단위** — 같은 날 누군가 끝내면 "
+            "그 날 = `completed`, `completed_by` 에 완료자 정보(닉네임/uid/profile_image)가 채워진다.\n\n"
+            "| 필드 | 타입 | 설명 |\n"
+            "| --- | --- | --- |\n"
+            "| `weekday` | integer | 0=월 ~ 6=일 |\n"
+            "| `label` | string | 한글 요일 (월/화/…/일) |\n"
+            "| `status` | string | `completed` / `incomplete` / `not_scheduled` |\n"
+            "| `completed_by` | object \\| null | `status=completed` 시 "
+            "`{uid, name, profile_image}`. 탈퇴 유저면 null |\n\n"
+            "상태값 정의:\n"
+            "- `completed` — 그 요일에 해당하는 이번 주 날짜에 완료 이력이 있다.\n"
+            "- `incomplete` — `repeat_days` 에 포함된 요일이지만 이번 주 완료 이력이 없다.\n"
+            "- `not_scheduled` — `repeat_days` 에 포함되지 않은 요일.\n\n"
+            "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 401 | `authentication_failed` | access 토큰 누락/만료 |\n"
@@ -1147,12 +1162,22 @@ class HomeChoreDetailView(APIView):
             "  \"id\": 12, \"category\": 3, \"category_label\": \"청소\",\n"
             "  \"name\": \"거실 청소\", \"description\": \"주 1회\",\n"
             "  \"repeat_days\": [0, 3], \"repeat_days_label\": [\"월\", \"목\"],\n"
-            "  \"difficulty\": 2, \"difficulty_label\": \"쉬움\", \"point\": 80\n"
+            "  \"difficulty\": 2, \"difficulty_label\": \"쉬움\", \"point\": 80,\n"
+            "  \"weekly_progress\": [\n"
+            "    {\"weekday\": 0, \"label\": \"월\", \"status\": \"completed\","
+            " \"completed_by\": {\"uid\": \"8f3e...\", \"name\": \"홍길동\", \"profile_image\": 3}},\n"
+            "    {\"weekday\": 1, \"label\": \"화\", \"status\": \"not_scheduled\", \"completed_by\": null},\n"
+            "    {\"weekday\": 2, \"label\": \"수\", \"status\": \"not_scheduled\", \"completed_by\": null},\n"
+            "    {\"weekday\": 3, \"label\": \"목\", \"status\": \"incomplete\", \"completed_by\": null},\n"
+            "    {\"weekday\": 4, \"label\": \"금\", \"status\": \"not_scheduled\", \"completed_by\": null},\n"
+            "    {\"weekday\": 5, \"label\": \"토\", \"status\": \"not_scheduled\", \"completed_by\": null},\n"
+            "    {\"weekday\": 6, \"label\": \"일\", \"status\": \"not_scheduled\", \"completed_by\": null}\n"
+            "  ]\n"
             "}\n"
             "```\n"
         ),
         responses={
-            200: OpenApiResponse(response=HomeChoreOutputSerializer, description="조회 성공."),
+            200: OpenApiResponse(response=HomeChoreDetailOutputSerializer, description="조회 성공."),
             401: OpenApiResponse(response=ErrorResponseSerializer, description="access 토큰 누락/만료."),
             404: OpenApiResponse(
                 response=ErrorResponseSerializer,
@@ -1173,6 +1198,24 @@ class HomeChoreDetailView(APIView):
                     "difficulty": 2,
                     "difficulty_label": "쉬움",
                     "point": 80,
+                    "weekly_progress": [
+                        {
+                            "weekday": 0,
+                            "label": "월",
+                            "status": "completed",
+                            "completed_by": {
+                                "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                                "name": "홍길동",
+                                "profile_image": 3,
+                            },
+                        },
+                        {"weekday": 1, "label": "화", "status": "not_scheduled", "completed_by": None},
+                        {"weekday": 2, "label": "수", "status": "not_scheduled", "completed_by": None},
+                        {"weekday": 3, "label": "목", "status": "incomplete", "completed_by": None},
+                        {"weekday": 4, "label": "금", "status": "not_scheduled", "completed_by": None},
+                        {"weekday": 5, "label": "토", "status": "not_scheduled", "completed_by": None},
+                        {"weekday": 6, "label": "일", "status": "not_scheduled", "completed_by": None},
+                    ],
                 },
                 response_only=True,
                 status_codes=["200"],
@@ -1185,7 +1228,7 @@ class HomeChoreDetailView(APIView):
         home_chore = selectors.get_user_home_chore(request.user, home_chore_id)
         if home_chore is None:
             raise NotFound("집안일을 찾을 수 없습니다.")
-        return Response(HomeChoreOutputSerializer(home_chore).data)
+        return Response(HomeChoreDetailOutputSerializer(home_chore).data)
 
     @extend_schema(
         tags=["Homes"],
