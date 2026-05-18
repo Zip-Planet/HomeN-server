@@ -609,6 +609,38 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
         return _weekday_labels(obj.chore.repeat_days)
 
 
+class HomeChoreDetailOutputSerializer(HomeChoreOutputSerializer):
+    """집안일 상세조회 전용 응답 — 이번 주(월~일) 진행상태 포함.
+
+    목록/PATCH 응답은 기존 `HomeChoreOutputSerializer` 를 그대로 사용한다.
+    상세 화면이 일주일 요일 칸 + 완료자(닉네임/프로필) 표시를 요구해 별도
+    시리얼라이저로 분리했다.
+
+    `weekly_progress` 의 각 원소는 다음 키를 가진다.
+    - `weekday`: 0(월) ~ 6(일).
+    - `label`: 한글 요일 라벨.
+    - `status`: `completed` / `incomplete` / `not_scheduled`.
+        - `not_scheduled` 는 `chore.repeat_days` 에 포함되지 않은 요일.
+    - `completed_by`: `status=completed` 일 때 완료자 정보 `{uid, name, profile_image}`,
+        그 외엔 `null`. 완료자 유저가 탈퇴(SET_NULL) 된 경우에도 `null`.
+    """
+
+    weekly_progress = serializers.SerializerMethodField(
+        help_text=(
+            "이번 주(월~일) 요일별 7개 진행상태. status 값: "
+            "completed/incomplete/not_scheduled."
+        ),
+    )
+
+    class Meta(HomeChoreOutputSerializer.Meta):
+        fields = HomeChoreOutputSerializer.Meta.fields + ["weekly_progress"]
+
+    def get_weekly_progress(self, obj: HomeChore) -> list[dict]:
+        from apps.homes import selectors
+
+        return selectors.get_weekly_progress(obj)
+
+
 # ── 집안일 메모 (1:N) ──────────────────────────────────────────────────────────
 
 

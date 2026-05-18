@@ -1,9 +1,13 @@
+from datetime import date, timedelta
+from unittest.mock import patch
+
 import pytest
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType
 from apps.homes.tests.factories import (
+    ChoreCompletionFactory,
     ChoreFactory,
     HomeChoreFactory,
     HomeFactory,
@@ -772,6 +776,166 @@ class TestHomeChoreDetailViewGet:
         res = APIClient().get(_chore_detail_url(1))
 
         assert res.status_code == 401
+
+
+class TestHomeChoreDetailViewWeeklyProgress:
+    """이번 주(월~일) 진행상태 응답 검증.
+
+    `timezone.localdate` 를 `frozen_today` (수요일) 로 픽스해 주 경계를 안정화.
+    이번 주 = 2026-05-11(월) ~ 2026-05-17(일).
+    """
+
+    frozen_today = date(2026, 5, 13)  # 수요일
+    monday = date(2026, 5, 11)
+    sunday = date(2026, 5, 17)
+
+    def _freeze(self):
+        return patch("apps.homes.selectors.timezone.localdate", return_value=self.frozen_today)
+
+    def test_완료이력_0건이면_repeat_days_만_incomplete_나머지는_not_scheduled(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[0, 3])  # 월/목
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        progress = res.data["weekly_progress"]
+        assert len(progress) == 7
+        assert [p["weekday"] for p in progress] == [0, 1, 2, 3, 4, 5, 6]
+        assert [p["label"] for p in progress] == ["월", "화", "수", "목", "금", "토", "일"]
+        statuses = {p["weekday"]: p["status"] for p in progress}
+        assert statuses[0] == "incomplete"
+        assert statuses[3] == "incomplete"
+        for non_repeat in (1, 2, 4, 5, 6):
+            assert statuses[non_repeat] == "not_scheduled"
+        assert all(p["completed_by"] is None for p in progress)
+
+    def test_이번주_월요일_완료이력_있으면_요청자_닉네임_표시(self):
+        user = UserFactory(name="홍길동", profile_image=3)
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[0, 3])
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        ChoreCompletionFactory(home_chore=home_chore, completed_by=user, date=self.monday)
+        client = auth_client(user)
+
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        mon = next(p for p in res.data["weekly_progress"] if p["weekday"] == 0)
+        assert mon["status"] == "completed"
+        assert mon["completed_by"] == {
+            "uid": str(user.uid),
+            "name": "홍길동",
+            "profile_image": 3,
+        }
+        thu = next(p for p in res.data["weekly_progress"] if p["weekday"] == 3)
+        assert thu["status"] == "incomplete"
+        assert thu["completed_by"] is None
+
+    def test_같은집_다른멤버가_완료해도_그_사람_닉네임으로_표시(self):
+        admin = UserFactory(name="나", profile_image=1)
+        other = UserFactory(name="룸메이트", profile_image=5)
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[2])  # 수
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        ChoreCompletionFactory(
+            home_chore=home_chore,
+            completed_by=other,
+            date=self.monday + timedelta(days=2),  # 수요일
+        )
+        client = auth_client(admin)
+
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        wed = next(p for p in res.data["weekly_progress"] if p["weekday"] == 2)
+        assert wed["status"] == "completed"
+        assert wed["completed_by"]["name"] == "룸메이트"
+        assert wed["completed_by"]["profile_image"] == 5
+
+    def test_지난주_완료이력은_이번주_응답에_반영되지_않음(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[0])
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        # 지난 주 월요일 완료 — 이번 주 윈도우 밖.
+        ChoreCompletionFactory(
+            home_chore=home_chore,
+            completed_by=user,
+            date=self.monday - timedelta(days=7),
+        )
+        client = auth_client(user)
+
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        mon = next(p for p in res.data["weekly_progress"] if p["weekday"] == 0)
+        assert mon["status"] == "incomplete"
+        assert mon["completed_by"] is None
+
+    def test_다른_집_완료이력은_누수되지_않음(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[0])
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+
+        # 같은 chore 인스턴스를 공유하는 별개 집에서 완료
+        other_home = HomeFactory()
+        other_home_chore = HomeChoreFactory(home=other_home, chore=ChoreFactory(starter_pack=None, repeat_days=[0]))
+        ChoreCompletionFactory(home_chore=other_home_chore, completed_by=user, date=self.monday)
+
+        client = auth_client(user)
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        mon = next(p for p in res.data["weekly_progress"] if p["weekday"] == 0)
+        assert mon["status"] == "incomplete"
+
+    def test_완료자_탈퇴된_경우_completed_by_null_이지만_completed_유지(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None, repeat_days=[0])
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        # completed_by 가 SET_NULL 된 상태
+        ChoreCompletionFactory(home_chore=home_chore, completed_by=None, date=self.monday)
+        client = auth_client(user)
+
+        with self._freeze():
+            res = client.get(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 200
+        mon = next(p for p in res.data["weekly_progress"] if p["weekday"] == 0)
+        assert mon["status"] == "completed"
+        assert mon["completed_by"] is None
+
+    def test_목록_응답에는_weekly_progress_없음(self):
+        """회귀 점검: list/PATCH 는 기존 시리얼라이저를 유지한다."""
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        HomeChoreFactory(home=home, chore=chore)
+        client = auth_client(user)
+
+        res = client.get("/api/v1/homes/mine/chores/")
+
+        assert res.status_code == 200
+        assert all("weekly_progress" not in item for item in res.data)
 
 
 class TestHomeChoreDetailViewPatch:

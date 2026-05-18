@@ -1,4 +1,7 @@
+from datetime import date, timedelta
+
 from django.db.models import QuerySet
+from django.utils import timezone
 
 from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeImageType, HomeMember, StarterPack
 from apps.users.models import User
@@ -111,6 +114,69 @@ def get_starter_pack_chores(starter_pack_id: int) -> QuerySet[Chore]:
         해당 스타터팩의 Chore QuerySet.
     """
     return Chore.objects.filter(starter_pack_id=starter_pack_id).order_by("id")
+
+
+def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> list[dict]:
+    """이번 주(월~일) 7일치 요일별 진행상태 배열을 반환합니다.
+
+    상태값:
+    - ``completed``: 그 요일에 해당하는 이번 주 날짜에 ChoreCompletion 이 존재.
+        ``completed_by`` 가 함께 채워짐 (탈퇴 유저면 None).
+    - ``incomplete``: ``chore.repeat_days`` 에 포함된 요일이지만 이번 주 완료 이력 없음.
+    - ``not_scheduled``: ``chore.repeat_days`` 에 포함되지 않은 요일.
+
+    Args:
+        home_chore: 대상 HomeChore (관계 로딩은 호출 측 책임 — chore prefetch 가정).
+        today: 기준 날짜 (테스트용 주입). None 이면 서버 로컬 날짜를 사용.
+
+    Returns:
+        7개 dict 의 리스트 (0=월 ~ 6=일). 각 원소는 ``{"weekday", "label",
+        "status", "completed_by"}`` 키를 가진다.
+    """
+    today = today or timezone.localdate()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+
+    completions_by_date = {
+        c.date: c
+        for c in home_chore.completions.select_related("completed_by").filter(
+            date__range=(monday, sunday)
+        )
+    }
+    repeat_days = set(home_chore.chore.repeat_days)
+
+    progress: list[dict] = []
+    for weekday in range(7):
+        target_date = monday + timedelta(days=weekday)
+        completion = completions_by_date.get(target_date)
+        if completion is not None:
+            status_value = "completed"
+            completed_by = _serialize_completed_by(completion.completed_by)
+        elif weekday in repeat_days:
+            status_value = "incomplete"
+            completed_by = None
+        else:
+            status_value = "not_scheduled"
+            completed_by = None
+
+        progress.append({
+            "weekday": weekday,
+            "label": Chore.Weekday(weekday).label,
+            "status": status_value,
+            "completed_by": completed_by,
+        })
+
+    return progress
+
+
+def _serialize_completed_by(user: User | None) -> dict | None:
+    if user is None:
+        return None
+    return {
+        "uid": str(user.uid),
+        "name": user.name,
+        "profile_image": user.profile_image,
+    }
 
 
 def get_home_chore_notes(user: User, home_chore_id: int) -> QuerySet[HomeChoreNote] | None:
