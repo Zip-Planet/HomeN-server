@@ -9,10 +9,17 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homen -d homen"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   app:
     build: .
-    command: uv run python manage.py runserver 0.0.0.0:8000
+    # DB 준비 후 마이그레이션을 먼저 적용하고 서버를 띄운다.
+    # migrate 가 없으면 새 DB 볼륨에서 테이블이 없어 "relation ... does not exist" 로 실패한다.
+    command: sh -c "uv run python manage.py migrate && uv run python manage.py runserver 0.0.0.0:8000"
     ports:
       - "8080:8000"
     volumes:
@@ -23,7 +30,8 @@ services:
     environment:
       DATABASE_URL: postgres://homen:homen@db:5432/homen
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
