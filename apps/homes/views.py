@@ -702,6 +702,7 @@ class HomeLeaveView(APIView):
 
     @extend_schema(
         tags=["Homes"],
+        request=None,
         summary="집 나가기 (구성원 전용)",
         description=(
             "## 🔥 설명\n"
@@ -840,6 +841,7 @@ class HomeChoreListView(APIView):
 
     @extend_schema(
         tags=["Homes"],
+        operation_id="v1_homes_mine_chores_list",
         summary="내 집의 집안일 목록 조회",
         description=(
             "## 🔥 설명\n"
@@ -1119,6 +1121,7 @@ class HomeChoreDetailView(APIView):
 
     @extend_schema(
         tags=["Homes"],
+        operation_id="v1_homes_mine_chores_retrieve",
         summary="내 집 집안일 단건 상세조회",
         description=(
             "## 🔥 설명\n"

@@ -112,6 +112,11 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
     "SECURITY": [{"BearerAuth": []}],
+    # HomeImageType / UserProfileImage 는 값(1~8)이 동일해 drf-spectacular 가 같은 choice set 으로
+    # 병합하면서 enum 이름 충돌을 경고한다. 결정적 이름을 부여해 경고를 제거한다.
+    "ENUM_NAME_OVERRIDES": {
+        "ImageTypeEnum": "apps.homes.models.HomeImageType",
+    },
     "TAGS": [
         {"name": "Auth", "description": "소셜 로그인 (Kakao/Apple), 로그아웃, 액세스 토큰 갱신."},
         {"name": "Users", "description": "본인 프로필 조회·수정·탈퇴, 프로필 이미지 프리셋."},
