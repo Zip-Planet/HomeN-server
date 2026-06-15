@@ -41,7 +41,7 @@ docker compose up --build
 | `SECRET_KEY` | Django 시크릿 키 (아무 임의 문자열) |
 | `DEBUG` | 로컬은 `True` |
 | `ALLOWED_HOSTS` | 로컬은 `*` |
-| `KAKAO_REST_API_KEY` / `KAKAO_CLIENT_SECRET` / `KAKAO_REDIRECT_URI` | 카카오 로그인 테스트 시 **실제 값 필요** (placeholder로는 로그인 실패) |
+| `KAKAO_REST_API_KEY` / `KAKAO_CLIENT_SECRET` / `KAKAO_REDIRECT_URI` | 카카오 로그인 테스트 시 **실제 값 필요** (placeholder로는 로그인 실패). `KAKAO_REDIRECT_URI`는 **FE가 인가 코드를 받을 때 쓴 redirect_uri와 글자 단위로 동일**해야 하고, 카카오 콘솔에도 동일하게 등록돼 있어야 함 — 불일치 시 `authentication_failed`(KOE320 `authorization code not found`). 웹 FE는 웹 URI(`http://localhost:8080/...`), 모바일 앱은 native 스킴(`kakao{앱키}://oauth`)을 사용 |
 | `APPLE_*` | 애플 로그인 테스트 시 필요 |
 
 ---

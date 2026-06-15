@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "drf_spectacular",
+    "corsheaders",
     "django.contrib.postgres",
     # Local
     "apps.users",
@@ -31,6 +32,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -147,6 +149,10 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+# CORS — 로컬(DEBUG)에서만 모든 origin 허용. 운영에서는 닫힌다.
+# 인증은 Authorization: Bearer(JWT) 헤더 방식이라 쿠키 credentials 는 불필요.
+CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 # Kakao OAuth2
 KAKAO_REST_API_KEY = env("KAKAO_REST_API_KEY", default="kakao-rest-api-key-placeholder")
