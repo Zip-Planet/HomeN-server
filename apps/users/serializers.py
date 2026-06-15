@@ -47,6 +47,16 @@ class KakaoLoginSerializer(serializers.Serializer):
     code = serializers.CharField(
         help_text="카카오 OAuth2 콜백으로 전달된 일회용 인가 코드(authorization code).",
     )
+    redirect_uri = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text=(
+            "FE 가 카카오 authorize 요청에 사용한 redirect_uri. 인가 코드를 발급받을 때와 "
+            "글자 단위로 동일해야 한다(불일치 시 카카오 KOE320 'authorization code not found'). "
+            "접속 위치(집 LAN IP·외부 도메인 등)에 따라 redirect_uri 가 달라지는 환경에서 이 값을 함께 보낸다. "
+            "생략/빈 문자열이면 서버 설정 KAKAO_REDIRECT_URI 로 폴백한다."
+        ),
+    )
 
 
 @extend_schema_serializer(

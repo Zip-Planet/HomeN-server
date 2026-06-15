@@ -50,6 +50,21 @@ class TestKakaoLoginView:
         mock_login.assert_called_once_with(code="valid-code")
 
     @patch("apps.users.services.kakao_login")
+    def test_login_forwards_redirect_uri(self, mock_login, api_client):
+        mock_login.return_value = FAKE_TOKENS
+
+        response = api_client.post(
+            self.url,
+            {"code": "valid-code", "redirect_uri": "http://192.168.0.5:8080/auth/kakao/callback"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        mock_login.assert_called_once_with(
+            code="valid-code", redirect_uri="http://192.168.0.5:8080/auth/kakao/callback"
+        )
+
+    @patch("apps.users.services.kakao_login")
     def test_login_failure_returns_401(self, mock_login, api_client):
         mock_login.side_effect = SocialLoginError("카카오 토큰 교환 실패")
 
