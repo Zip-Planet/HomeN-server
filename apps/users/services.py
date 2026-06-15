@@ -76,11 +76,17 @@ def _get_or_create_social_user(*, provider: str, provider_id: str, refresh_token
 # 카카오
 # ──────────────────────────────────────────
 
-def _exchange_kakao_code(code: str) -> dict:
+def _exchange_kakao_code(code: str, redirect_uri: str = "") -> dict:
     """카카오 인가 코드를 access_token으로 교환합니다.
+
+    카카오는 토큰 교환 시의 redirect_uri가 인가 코드를 발급받을 때(authorize)의
+    redirect_uri와 정확히 일치할 것을 요구합니다. 접속 위치(집 LAN·외부 도메인)에 따라
+    redirect_uri가 달라지는 환경을 지원하기 위해, FE가 실제로 사용한 값을 받아 그대로 사용합니다.
 
     Args:
         code: 카카오로부터 받은 인가 코드.
+        redirect_uri: FE가 authorize에 사용한 redirect_uri. 빈 문자열이면
+            서버 설정 KAKAO_REDIRECT_URI로 폴백합니다.
 
     Returns:
         'access_token'을 포함한 토큰 응답 딕셔너리.
@@ -91,7 +97,7 @@ def _exchange_kakao_code(code: str) -> dict:
     data = {
         "grant_type": "authorization_code",
         "client_id": settings.KAKAO_REST_API_KEY,
-        "redirect_uri": settings.KAKAO_REDIRECT_URI,
+        "redirect_uri": redirect_uri or settings.KAKAO_REDIRECT_URI,
         "code": code,
     }
     if settings.KAKAO_CLIENT_SECRET:
@@ -148,11 +154,13 @@ def _kakao_unlink(provider_id: str) -> None:
         logger.warning("카카오 unlink 실패: provider_id=%s status=%s body=%s", provider_id, response.status_code, response.text)
 
 
-def kakao_login(*, code: str) -> dict[str, str]:
+def kakao_login(*, code: str, redirect_uri: str = "") -> dict[str, str]:
     """카카오 OAuth2로 유저를 인증하고 JWT 토큰을 반환합니다.
 
     Args:
         code: 카카오로부터 받은 인가 코드.
+        redirect_uri: FE가 authorize에 사용한 redirect_uri. 빈 문자열이면
+            서버 설정 KAKAO_REDIRECT_URI로 폴백합니다.
 
     Returns:
         'access'와 'refresh' JWT 토큰 문자열을 담은 딕셔너리.
@@ -160,7 +168,7 @@ def kakao_login(*, code: str) -> dict[str, str]:
     Raises:
         SocialLoginError: 카카오 로그인 플로우 중 오류가 발생한 경우.
     """
-    token_data = _exchange_kakao_code(code)
+    token_data = _exchange_kakao_code(code, redirect_uri)
     user_info = _get_kakao_user_info(token_data["access_token"])
 
     provider_id = str(user_info["id"])

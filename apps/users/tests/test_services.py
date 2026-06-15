@@ -53,6 +53,30 @@ class TestKakaoLogin:
         with pytest.raises(SocialLoginError):
             kakao_login(code="bad-code")
 
+    @patch("apps.users.services.requests.post")
+    def test_exchange_uses_request_redirect_uri(self, mock_post):
+        """FE가 보낸 redirect_uri를 토큰 교환에 그대로 사용한다 (접속 위치별 다중 host 지원)."""
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        _exchange_kakao_code("code-1", "http://192.168.0.5:8080/auth/kakao/callback")
+
+        assert mock_post.call_args.kwargs["data"]["redirect_uri"] == "http://192.168.0.5:8080/auth/kakao/callback"
+
+    @patch("apps.users.services.requests.post")
+    def test_exchange_falls_back_to_settings_redirect_uri(self, mock_post):
+        """redirect_uri 미지정 시 서버 설정값으로 폴백한다 (하위호환)."""
+        from django.conf import settings
+
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        _exchange_kakao_code("code-1")
+
+        assert mock_post.call_args.kwargs["data"]["redirect_uri"] == settings.KAKAO_REDIRECT_URI
+
 
 @pytest.mark.django_db
 class TestAppleLogin:

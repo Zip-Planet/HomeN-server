@@ -41,7 +41,7 @@ docker compose up --build
 | `SECRET_KEY` | Django 시크릿 키 (아무 임의 문자열) |
 | `DEBUG` | 로컬은 `True` |
 | `ALLOWED_HOSTS` | 로컬은 `*` |
-| `KAKAO_REST_API_KEY` / `KAKAO_CLIENT_SECRET` / `KAKAO_REDIRECT_URI` | 카카오 로그인 테스트 시 **실제 값 필요** (placeholder로는 로그인 실패) |
+| `KAKAO_REST_API_KEY` / `KAKAO_CLIENT_SECRET` / `KAKAO_REDIRECT_URI` | 카카오 로그인 테스트 시 **실제 값 필요** (placeholder로는 로그인 실패). `KAKAO_REDIRECT_URI`는 **FE가 인가 코드를 받을 때 쓴 redirect_uri와 글자 단위로 동일**해야 하고, 카카오 콘솔에도 동일하게 등록돼 있어야 함 — 불일치 시 `authentication_failed`(KOE320 `authorization code not found`). 웹 FE는 웹 URI(`http://localhost:8080/...`), 모바일 앱은 native 스킴(`kakao{앱키}://oauth`)을 사용 |
 | `APPLE_*` | 애플 로그인 테스트 시 필요 |
 
 ---
@@ -103,5 +103,5 @@ docker compose exec app uv run python manage.py test
 | --- | --- |
 | `relation "..." does not exist` | 마이그레이션 미적용. 보통 자동 적용되지만, 안 되면 `docker compose exec app uv run python manage.py migrate` 또는 `docker compose down -v` 후 재기동 |
 | 카카오 로그인 `ip mismatched! callerIp=...` | 카카오 디벨로퍼스 → 앱 → 보안 → **호출 허용 IP**에 서버의 공인 IP 추가(또는 제한 해제). 가정용 유동 IP는 바뀌면 재등록 필요 |
-| 카카오 로그인 401 `authorization code not found` | 인가코드는 **1회용**. 같은 코드로 재요청 금지 (FE에서 중복 전송 여부 확인) |
+| 카카오 로그인 401 `authorization code not found` | ① 인가코드는 **1회용** — 같은 코드 재요청 금지(FE 중복 전송 확인). ② **redirect_uri 불일치** — authorize 때와 토큰 교환 때 값이 달라도 동일 에러. 접속 위치(집 LAN·외부)별로 redirect_uri가 바뀌면, FE가 `POST /auth/kakao/` 요청 body에 `redirect_uri`를 함께 보내고(서버가 그 값으로 교환) **해당 URI를 카카오 콘솔에 등록**할 것. 미전송 시 서버 `KAKAO_REDIRECT_URI`로 폴백 |
 | `8080` / `5432` 포트 충돌 | 해당 포트를 쓰는 프로세스를 종료하거나 `docker-compose.yml`의 포트 매핑 변경 |

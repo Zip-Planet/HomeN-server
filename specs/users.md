@@ -51,9 +51,15 @@
 **Request Body**
 ```json
 {
-  "code": "카카오_인가_코드"
+  "code": "카카오_인가_코드",
+  "redirect_uri": "http://192.168.0.5:8080/auth/kakao/callback"
 }
 ```
+
+> `redirect_uri`(선택)는 FE가 카카오 authorize에 사용한 값과 **글자 단위로 동일**해야 합니다.
+> 불일치 시 카카오가 KOE320(`authorization code not found`)을 반환합니다. 접속 위치(집 LAN IP·외부 도메인 등)에
+> 따라 redirect_uri가 달라지는 환경에서는 이 값을 함께 보내 서버가 동일한 값으로 토큰을 교환하게 합니다.
+> 생략/빈 문자열이면 서버 설정 `KAKAO_REDIRECT_URI`로 폴백합니다. **사용하는 모든 redirect_uri는 카카오 콘솔에 미리 등록**되어 있어야 합니다.
 
 **Response 200**
 ```json

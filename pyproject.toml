@@ -15,6 +15,7 @@ dependencies = [
     "cryptography>=43.0.0",
     "pillow>=10.0.0",
     "drf-spectacular>=0.29.0",
+    "django-cors-headers>=4.4.0",
 ]
 
 [dependency-groups]
