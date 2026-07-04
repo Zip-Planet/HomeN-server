@@ -1,6 +1,8 @@
 from datetime import timedelta
+from io import StringIO
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 
 from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, WeeklyAssignment
@@ -14,11 +16,14 @@ from apps.homes.services import (
     HomeNotFoundError,
     NotHomeAdminError,
     TransferAdminTargetError,
+    auto_confirm_due_assignments,
     confirm_assignment,
     create_home,
     delete_home,
     delete_home_chore,
+    expire_past_assignments,
     generate_assignment,
+    generate_weekly_assignments,
     join_home,
     leave_home,
     next_week_start,
@@ -544,3 +549,134 @@ class TestConfirmAssignment:
         item.refresh_from_db()
         assert item.chore_name == "집안일0"
         assert item.point == 120
+
+
+class TestAssignmentScheduleBatch:
+    def test_자동_생성_대상만_생성_기존_보유_집은_스킵(self):
+        eligible_home, _ = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(eligible_home, name=f"집안일{i}")
+
+        manual_home, manual_admin = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(manual_home, name=f"수동집안일{i}")
+        generate_assignment(user=manual_admin)  # 관리자 수동 생성 → 자동 생성 스킵 대상
+
+        lacking_home, _ = _make_home_with_admin()
+        _add_chore(lacking_home, name="집안일 하나뿐")
+
+        created, skipped = generate_weekly_assignments()
+
+        assert created == 1
+        assert skipped == 2
+        assert WeeklyAssignment.objects.filter(
+            home=eligible_home, week_start=next_week_start(), status=WeeklyAssignment.Status.PROPOSED
+        ).exists()
+        assert not WeeklyAssignment.objects.filter(home=lacking_home).exists()
+
+    def test_자동_생성_멱등(self):
+        home, _ = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+
+        first = generate_weekly_assignments()
+        second = generate_weekly_assignments()
+
+        assert first == (1, 0)
+        assert second == (0, 1)
+        assert WeeklyAssignment.objects.filter(home=home).count() == 1
+
+    def test_자동_확정_조건_만족_시_confirmed_by_없이_확정(self):
+        home, admin = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+        current_week = week_start_of(timezone.localdate())
+        assignment = generate_assignment(user=admin, week_start=current_week)
+
+        confirmed, skipped = auto_confirm_due_assignments()
+
+        assert (confirmed, skipped) == (1, 0)
+        assignment.refresh_from_db()
+        assert assignment.status == WeeklyAssignment.Status.CONFIRMED
+        assert assignment.confirmed_by is None
+        assert assignment.confirmed_at is not None
+
+    def test_자동_확정_조건_불만족_시_proposed_유지(self):
+        home, admin = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+        current_week = week_start_of(timezone.localdate())
+        assignment = generate_assignment(user=admin, week_start=current_week)
+        _add_chore(home, name="확정_직전_추가됨")  # 지문 불일치 유발
+
+        confirmed, skipped = auto_confirm_due_assignments()
+
+        assert (confirmed, skipped) == (0, 1)
+        assignment.refresh_from_db()
+        assert assignment.status == WeeklyAssignment.Status.PROPOSED
+
+    def test_다음_주차_proposed_는_자동_확정_대상_아님(self):
+        home, admin = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+        assignment = generate_assignment(user=admin)  # 다음 주차
+
+        confirmed, skipped = auto_confirm_due_assignments()
+
+        assert (confirmed, skipped) == (0, 0)
+        assignment.refresh_from_db()
+        assert assignment.status == WeeklyAssignment.Status.PROPOSED
+
+    def test_지난_주차_confirmed_만료_전환(self):
+        home, _admin = _make_home_with_admin()
+        current_week = week_start_of(timezone.localdate())
+        past = WeeklyAssignment.objects.create(
+            home=home,
+            week_start=current_week - timedelta(days=7),
+            status=WeeklyAssignment.Status.CONFIRMED,
+            generated_at=timezone.now(),
+            member_uids_snapshot=[],
+            chore_fingerprint="f",
+        )
+        current = WeeklyAssignment.objects.create(
+            home=home,
+            week_start=current_week,
+            status=WeeklyAssignment.Status.CONFIRMED,
+            generated_at=timezone.now(),
+            member_uids_snapshot=[],
+            chore_fingerprint="f",
+        )
+
+        expired_count = expire_past_assignments()
+
+        assert expired_count == 1
+        past.refresh_from_db()
+        current.refresh_from_db()
+        assert past.status == WeeklyAssignment.Status.EXPIRED
+        assert current.status == WeeklyAssignment.Status.CONFIRMED
+
+    def test_generate_assignments_커맨드(self):
+        home, _ = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+
+        out = StringIO()
+        call_command("generate_assignments", stdout=out)
+
+        assert "생성 1건" in out.getvalue()
+        assert WeeklyAssignment.objects.filter(home=home, week_start=next_week_start()).exists()
+
+    def test_finalize_assignments_커맨드(self):
+        home, admin = _make_home_with_admin()
+        for i in range(3):
+            _add_chore(home, name=f"집안일{i}")
+        current_week = week_start_of(timezone.localdate())
+        generate_assignment(user=admin, week_start=current_week)
+
+        out = StringIO()
+        call_command("finalize_assignments", stdout=out)
+
+        assert "자동 확정 1건" in out.getvalue()
+        assert WeeklyAssignment.objects.filter(
+            home=home, week_start=current_week, status=WeeklyAssignment.Status.CONFIRMED, confirmed_by=None
+        ).exists()

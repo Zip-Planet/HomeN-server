@@ -98,6 +98,26 @@ docker compose exec app uv run python manage.py test
 
 ---
 
+## 정기 작업 (분담안 스케줄)
+
+분담안 자동 생성/확정은 management command 로 제공되며, 배포 환경의 **cron** 에 등록해야 동작합니다
+(로컬 개발에서는 필요 시 수동 실행). 정책은 `specs/assignments.md` 참조.
+
+| 커맨드 | 스케줄 (Asia/Seoul) | 동작 |
+| --- | --- | --- |
+| `generate_assignments` | 매주 일요일 21:05 | 모든 활성 집에 다음 주차 분담안 자동 생성 (수동 생성·기존 보유 집은 스킵) |
+| `finalize_assignments` | 매주 월요일 00:00 | 시작된 주차의 proposed 를 확정 조건 검증 후 자동 확정, 지난 주차 confirmed → expired 전환 |
+
+```cron
+# crontab 예시 (Docker Compose 배포 기준)
+5 21 * * 0  cd /path/to/HomeN-server && docker compose exec -T app uv run python manage.py generate_assignments
+0 0  * * 1  cd /path/to/HomeN-server && docker compose exec -T app uv run python manage.py finalize_assignments
+```
+
+두 커맨드 모두 멱등이라 중복 실행해도 안전합니다.
+
+---
+
 ## 트러블슈팅
 
 | 증상 | 원인 / 해결 |
