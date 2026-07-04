@@ -25,6 +25,8 @@ from rest_framework.views import APIView
 
 from apps.homes import selectors, services
 from apps.homes.serializers import (
+    AssignmentCreateSerializer,
+    AssignmentWeekQuerySerializer,
     ChoreOutputSerializer,
     HomeChoreDetailOutputSerializer,
     HomeChoreListCreateSerializer,
@@ -41,8 +43,10 @@ from apps.homes.serializers import (
     ImageIdSerializer,
     StarterPackSerializer,
     TransferAdminSerializer,
+    WeeklyAssignmentOutputSerializer,
 )
 from common.error_responses import ErrorResponseSerializer, error_example
+from common.exceptions import Conflict
 
 
 # 공통 응답 예시 (status_codes=["200"|"201"|"204"|...])
@@ -1899,3 +1903,220 @@ class StarterPackChoreListView(APIView):
     def get(self, request: Request, starter_pack_id: int) -> Response:
         chores = selectors.get_starter_pack_chores(starter_pack_id)
         return Response(ChoreOutputSerializer(chores, many=True).data)
+
+
+# ── 분담안 (WeeklyAssignment) ─────────────────────────────────────────────────
+
+
+def _serialize_assignment(assignment) -> dict:
+    """분담안을 완료 여부 컨텍스트와 함께 직렬화합니다."""
+    completed_keys = selectors.get_completed_item_keys(assignment)
+    return WeeklyAssignmentOutputSerializer(assignment, context={"completed_keys": completed_keys}).data
+
+
+class HomeAssignmentView(APIView):
+    """분담안 조회(모든 구성원) / 수동 생성(관리자 전용).
+
+    상태·정책은 specs/assignments.md 참조. 생성/재생성/확정 권한은 관리자에게만
+    있으며, 조회는 모든 구성원이 가능하다.
+    """
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="내 집 분담안 조회 (주차별)",
+        description=(
+            "## 🔥 설명\n"
+            "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **다음 주차**. "
+            "모든 구성원이 조회 가능하다. 항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 다음 주차 |\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `invalid` | week_start 가 월요일이 아님 |\n"
+            "| 401 | `authentication_failed` | 토큰 누락/만료 |\n"
+            "| 404 | `not_found` | 속한 집 없음 / 해당 주차 분담안 없음 |\n"
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="week_start", type=str, description="조회할 주차의 월요일 날짜 (YYYY-MM-DD). 생략 시 다음 주차."
+            ),
+        ],
+        responses={
+            200: OpenApiResponse(
+                response=WeeklyAssignmentOutputSerializer, description="분담안 (항목 + 멤버별 예상 포인트)."
+            ),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="week_start 형식/요일 오류."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집 없음 / 분담안 없음."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="해당 주차의 분담안이 없습니다.", name="분담안 없음"),
+        ],
+    )
+    def get(self, request: Request) -> Response:
+        query = AssignmentWeekQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+
+        home = selectors.get_user_home(request.user)
+        if home is None:
+            raise NotFound("속한 집이 없습니다.")
+
+        week_start = query.validated_data.get("week_start") or services.next_week_start()
+        assignment = selectors.get_week_assignment(home, week_start)
+        if assignment is None:
+            raise NotFound("해당 주차의 분담안이 없습니다.")
+
+        return Response(_serialize_assignment(assignment))
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="분담안 수동 생성 (관리자 전용)",
+        description=(
+            "## 🔥 설명\n"
+            "분담안을 수동 생성한다. **관리자 전용**. `week_start` 생략 시 다음 주차, 과거 주차 불가. "
+            "수동 생성된 주차는 일요일 자동 생성에서 스킵된다.\n\n"
+            "배정: 활성 집안일 × 반복 요일을 펼쳐 멤버별 예상 포인트 총합이 균등하도록 배정한다 "
+            "(동점 시 최근 3주 기여도 낮은 멤버 우선). 활성 집안일 3개 이상 필요.\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `invalid_week_start` | 월요일 아님 / 과거 주차 |\n"
+            "| 400 | `assignment_already_exists` | 해당 주차 분담안 이미 존재 |\n"
+            "| 400 | `not_enough_chores` | 활성 집안일 3개 미만 |\n"
+            "| 403 | `permission_denied` | 관리자 아님 |\n"
+            "| 404 | `not_found` | 속한 집 없음 |\n"
+        ),
+        request=AssignmentCreateSerializer,
+        responses={
+            201: OpenApiResponse(response=WeeklyAssignmentOutputSerializer, description="생성된 분담안 (proposed)."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="주차 오류 / 중복 / 집안일 부족."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자 아님."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="not_enough_chores",
+                message="분담안을 만들려면 활성 집안일이 3개 이상이어야 합니다.",
+                name="집안일 부족",
+            ),
+        ],
+    )
+    def post(self, request: Request) -> Response:
+        serializer = AssignmentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            assignment = services.generate_assignment(user=request.user, **serializer.validated_data)
+        except services.NotHomeAdminError as e:
+            raise PermissionDenied(str(e)) from e
+        except services.AssignmentStateError as e:
+            raise ValidationError({e.code: str(e)}) from e
+
+        return Response(_serialize_assignment(assignment), status=status.HTTP_201_CREATED)
+
+
+class HomeAssignmentRegenerateView(APIView):
+    """분담안 재생성 (관리자 전용, proposed 상태만)."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="분담안 재생성 (관리자 전용, proposed 만)",
+        description=(
+            "## 🔥 설명\n"
+            "proposed 상태의 분담안을 폐기하고 최신 원본(집안일/구성원) 기준으로 새 분담안을 생성한다. "
+            "**관리자 전용**. confirmed 상태는 재생성 불가. 동점 배정에 무작위성이 있어 동일 결과 반복을 피한다.\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `not_proposed` | proposed 상태가 아님 |\n"
+            "| 400 | `not_enough_chores` | 활성 집안일 3개 미만 |\n"
+            "| 403 | `permission_denied` | 관리자 아님 |\n"
+            "| 404 | `not_found` | 분담안 없음/다른 집 |\n"
+        ),
+        request=None,
+        responses={
+            201: OpenApiResponse(response=WeeklyAssignmentOutputSerializer, description="재생성된 분담안 (proposed)."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="상태/집안일 수 조건 위반."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자 아님."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="분담안 없음."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="not_proposed", message="제안됨 상태의 분담안만 재생성할 수 있습니다.", name="상태 오류"
+            ),
+        ],
+    )
+    def post(self, request: Request, assignment_id: int) -> Response:
+        try:
+            assignment = services.regenerate_assignment(user=request.user, assignment_id=assignment_id)
+        except services.NotHomeAdminError as e:
+            raise PermissionDenied(str(e)) from e
+        except services.AssignmentNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.AssignmentStateError as e:
+            raise ValidationError({e.code: str(e)}) from e
+
+        return Response(_serialize_assignment(assignment), status=status.HTTP_201_CREATED)
+
+
+class HomeAssignmentConfirmView(APIView):
+    """분담안 확정 (관리자 전용, 확정 조건 검증)."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="분담안 확정 (관리자 전용)",
+        description=(
+            "## 🔥 설명\n"
+            "proposed 분담안을 확정한다. **관리자 전용**. 확정된 분담안은 수정/삭제/재생성이 불가하다.\n\n"
+            "확정 조건: proposed 상태 / 같은 주차 확정본 없음 / 구성원 1명 이상 / "
+            "생성 시점 이후 **집안일 변경 없음** / **활성 집안일 3개 이상** / **구성원 변화 없음**. "
+            "뒤의 3개 조건 위반 시 409 를 반환하며, 재생성 후 다시 확정해야 한다.\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `not_proposed` | proposed 상태가 아님 |\n"
+            "| 400 | `already_confirmed_week` | 같은 주차에 확정본 존재 |\n"
+            "| 403 | `permission_denied` | 관리자 아님 |\n"
+            "| 404 | `not_found` | 분담안 없음/다른 집 |\n"
+            "| 409 | `chores_changed` | 생성 이후 집안일 변경 감지 — 재생성 필요 |\n"
+            "| 409 | `members_changed` | 생성 이후 구성원 변화 감지 — 재생성 필요 |\n"
+            "| 409 | `not_enough_chores` | 활성 집안일 3개 미만 — 재생성 필요 |\n"
+        ),
+        request=None,
+        responses={
+            200: OpenApiResponse(response=WeeklyAssignmentOutputSerializer, description="확정된 분담안 (confirmed)."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="상태 조건 위반."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자 아님."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="분담안 없음."),
+            409: OpenApiResponse(response=ErrorResponseSerializer, description="생성 이후 변경 감지 — 재생성 필요."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="chores_changed",
+                message="분담안 생성 이후 집안일이 변경되었습니다. 분담안을 재생성해 주세요.",
+                name="집안일 변경 감지",
+            ),
+        ],
+    )
+    def post(self, request: Request, assignment_id: int) -> Response:
+        try:
+            assignment = services.confirm_assignment(user=request.user, assignment_id=assignment_id)
+        except services.NotHomeAdminError as e:
+            raise PermissionDenied(str(e)) from e
+        except services.AssignmentNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.AssignmentConflictError as e:
+            raise Conflict({e.code: str(e)}) from e
+        except services.AssignmentStateError as e:
+            raise ValidationError({e.code: str(e)}) from e
+
+        return Response(_serialize_assignment(assignment))

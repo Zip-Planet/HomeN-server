@@ -3,7 +3,17 @@ from datetime import date, timedelta
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeImageType, HomeMember, StarterPack
+from apps.homes.models import (
+    Chore,
+    ChoreCompletion,
+    Home,
+    HomeChore,
+    HomeChoreNote,
+    HomeImageType,
+    HomeMember,
+    StarterPack,
+    WeeklyAssignment,
+)
 from apps.users.models import User
 
 
@@ -206,3 +216,45 @@ def get_home_chore_notes(user: User, home_chore_id: int) -> QuerySet[HomeChoreNo
         .filter(home_chore_id=home_chore_id)
         .order_by("id")
     )
+
+
+def get_week_assignment(home: Home, week_start: date) -> WeeklyAssignment | None:
+    """특정 주차의 분담안을 반환합니다. 없으면 None.
+
+    한 집·한 주차에는 분담안이 최대 1건만 존재한다 (proposed/confirmed 각각
+    partial unique + 상태 전이가 같은 row 에서 일어남).
+
+    Args:
+        home: 대상 Home 인스턴스.
+        week_start: 주차의 월요일 날짜.
+
+    Returns:
+        items(+assignee) 를 prefetch 한 WeeklyAssignment 또는 None.
+    """
+    return (
+        WeeklyAssignment.objects
+        .prefetch_related("items__assignee")
+        .filter(home=home, week_start=week_start)
+        .first()
+    )
+
+
+def get_completed_item_keys(assignment: WeeklyAssignment) -> set[tuple[int, date]]:
+    """분담안 주차에 완료된 (home_chore_id, date) 키 집합을 반환합니다.
+
+    분담안 항목의 완료 여부는 별도 컬럼 없이 기존 `ChoreCompletion` 과 조인해
+    계산한다 — 항목의 실행 날짜는 week_start + weekday.
+
+    Args:
+        assignment: 대상 분담안 (items prefetch 가정).
+
+    Returns:
+        완료된 (home_chore_id, 완료 날짜) 튜플 집합.
+    """
+    week_start = assignment.week_start
+    week_end = week_start + timedelta(days=6)
+    home_chore_ids = {item.home_chore_id for item in assignment.items.all() if item.home_chore_id}
+    completions = ChoreCompletion.objects.filter(
+        home_chore_id__in=home_chore_ids, date__range=(week_start, week_end)
+    ).values_list("home_chore_id", "date")
+    return set(completions)
