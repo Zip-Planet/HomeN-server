@@ -131,6 +131,16 @@ class Chore(models.Model):
         MEDIUM_HIGH = 4, "중상"
         HIGH = 5, "상"
 
+    # 포인트는 난이도에 1:1 로 고정된 파생 값이다 ("포인트는 난이도에 따라 자동
+    # 고정돼요"). 직접 입력을 허용하지 않으므로 DB 컬럼 없이 property 로 노출한다.
+    POINT_BY_DIFFICULTY: dict[int, int] = {
+        Difficulty.LOW: 40,
+        Difficulty.MEDIUM_LOW: 80,
+        Difficulty.MEDIUM: 120,
+        Difficulty.MEDIUM_HIGH: 160,
+        Difficulty.HIGH: 200,
+    }
+
     class Weekday(models.IntegerChoices):
         MON = 0, "월"
         TUE = 1, "화"
@@ -156,6 +166,11 @@ class Chore(models.Model):
     class Meta:
         db_table = "chores"
 
+    @property
+    def point(self) -> int:
+        """난이도에 따라 자동 부여되는 포인트 (하40/중하80/중120/중상160/상200)."""
+        return self.POINT_BY_DIFFICULTY.get(self.difficulty, 0)
+
     def __str__(self) -> str:
         return f"chore:{self.pk}:{self.name}"
 
@@ -166,14 +181,19 @@ class HomeChore(models.Model):
     메모는 별도 모델(`HomeChoreNote`) 로 1:N 관리한다 (Figma 의 메모 화면이 다중
     작성자 메모 + 수정/삭제를 노출하므로).
 
+    삭제는 soft-delete — 완료 이력이 있는 집안일은 `is_active=False` 로 비활성화해
+    리포트/기여도/히스토리 데이터를 보존한다 (이력이 전혀 없으면 물리 삭제).
+
     Attributes:
         home: 대상 집.
         chore: 배정된 집안일.
+        is_active: 활성 여부. False 면 삭제(비활성화)된 집안일.
         created_at: 배정 일시.
     """
 
     home = models.ForeignKey(Home, on_delete=models.CASCADE, related_name="home_chores")
     chore = models.ForeignKey(Chore, on_delete=models.CASCADE, related_name="home_chores")
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

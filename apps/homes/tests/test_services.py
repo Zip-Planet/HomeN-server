@@ -229,3 +229,16 @@ class TestTransferAdmin:
 
         with pytest.raises(TransferAdminTargetError):
             transfer_admin(user=admin, target_uid=nonmember.uid)
+
+
+class TestChorePoint:
+    """난이도 → 포인트 자동 부여 (하40/중하80/중120/중상160/상200)."""
+
+    @pytest.mark.parametrize(
+        ("difficulty", "expected_point"),
+        [(1, 40), (2, 80), (3, 120), (4, 160), (5, 200)],
+    )
+    def test_난이도별_포인트_자동_산출(self, difficulty: int, expected_point: int):
+        chore = Chore(category=ChoreCategory.TRASH, name="집안일", repeat_days=[0], difficulty=difficulty)
+
+        assert chore.point == expected_point

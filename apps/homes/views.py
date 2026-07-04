@@ -845,8 +845,8 @@ class HomeChoreListView(APIView):
         summary="내 집의 집안일 목록 조회",
         description=(
             "## 🔥 설명\n"
-            "현재 유저가 속한 집의 집안일을 PK 오름차순으로 반환한다. 비어 있는 집은 200 + `[]`. 다른 집의 "
-            "집안일은 노출되지 않는다.\n\n"
+            "현재 유저가 속한 집의 **활성** 집안일을 PK 오름차순으로 반환한다. 삭제(비활성화)된 집안일은 "
+            "제외된다. 비어 있는 집은 200 + `[]`. 다른 집의 집안일은 노출되지 않는다.\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
@@ -1100,8 +1100,10 @@ class HomeChoreDetailView(APIView):
     """집안일 단건 상세조회 / 수정 / 삭제.
 
     본인 집의 HomeChore 만 접근 가능 — 다른 집·미존재는 항상 404 (존재 비노출).
-    수정/삭제는 구성원 누구나 가능하며, 스타터팩 chore 수정은 copy-on-write 로
-    본인 집 전용 사본을 만들어 프리셋 데이터를 보존한다.
+    수정/삭제는 구성원 누구나 가능하며, 수정은 항상 copy-on-write 로 본인 집 전용
+    사본을 만들어 원본(과거 데이터)을 보존한다. 삭제는 완료 이력이 있으면
+    비활성화(soft-delete), 없으면 물리 삭제한다. 삭제된 집안일은 상세 조회만
+    가능하다 (`is_active=false` 로 구분).
     """
 
     _OUTPUT_FIELDS_TABLE = (
@@ -1116,7 +1118,8 @@ class HomeChoreDetailView(APIView):
         "| body | `repeat_days_label` | string[] | 반복 요일 한글 (예: ['월','목']) |\n"
         "| body | `difficulty` | integer | 난이도 enum (1~5) |\n"
         "| body | `difficulty_label` | string | 3단계 라벨: '쉬움'(1~2), '중간'(3~4), '어려움'(5) |\n"
-        "| body | `point` | integer | 난이도 고정 포인트: 40/80/120/160/200 |\n\n"
+        "| body | `point` | integer | 난이도 고정 포인트: 40/80/120/160/200 |\n"
+        "| body | `is_active` | boolean | 활성 여부. false 면 삭제(비활성화)된 집안일 — 상세 화면에서 안내 |\n\n"
     )
 
     @extend_schema(
@@ -1239,8 +1242,9 @@ class HomeChoreDetailView(APIView):
         description=(
             "## 🔥 설명\n"
             "본인 집의 집안일 메타를 부분 수정한다. **구성원 누구나** 호출 가능. 모든 필드는 optional 이며 "
-            "전달된 키만 적용된다. 스타터팩에서 비롯된 chore 는 **copy-on-write** — 프리셋 Chore 는 보존되고 "
-            "본인 집 전용 사본이 새로 생성되어 `HomeChore.chore` 가 교체된다(응답의 `id` 는 그대로).\n\n"
+            "전달된 키만 적용된다. 수정은 항상 **copy-on-write** — 원본 Chore 는 보존되고(과거 이력·분담안 "
+            "히스토리 보존) 본인 집 전용 사본이 새로 생성되어 `HomeChore.chore` 가 교체된다(응답의 `id` 는 그대로). "
+            "포인트는 난이도에 따라 자동 재계산된다. 삭제(비활성화)된 집안일은 404.\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
@@ -1319,11 +1323,13 @@ class HomeChoreDetailView(APIView):
 
     @extend_schema(
         tags=["Homes"],
-        summary="내 집 집안일 삭제 (구성원 누구나, 링크 해제)",
+        summary="내 집 집안일 삭제 (구성원 누구나, 이력 있으면 비활성화)",
         description=(
             "## 🔥 설명\n"
-            "본인 집에서 해당 집안일 연결을 제거한다. **구성원 누구나** 호출 가능. 원본 `Chore` 는 보존되며, "
-            "스타터팩 chore 의 경우 다른 집에서 살아있는 연결에 영향을 주지 않는다.\n\n"
+            "본인 집의 집안일을 삭제한다. **구성원 누구나** 호출 가능. 완료 이력이 있으면 물리 삭제 대신 "
+            "**비활성화(soft-delete)** 되어 리포트/기여도/히스토리 데이터가 보존되고, 이력이 전혀 없으면 물리 "
+            "삭제된다. 비활성화된 집안일은 목록·다음 분담안에서 제외되며 상세 조회(`is_active=false`)만 가능하다. "
+            "원본 `Chore` 는 항상 보존되고, 스타터팩 chore 의 경우 다른 집 연결에 영향을 주지 않는다.\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"

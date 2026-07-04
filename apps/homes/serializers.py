@@ -39,10 +39,10 @@ from apps.homes.models import (
 # 디자인이 노출하는 표현은 5단계 난이도와 다르다.
 # - 난이도(1~5) 는 화면에서 3단계 라벨(쉬움/중간/어려움) 로 묶여 보이며,
 # - 포인트는 난이도에 1:1 로 묶인 고정 값이다 ("포인트는 난이도에 따라 자동 고정돼요").
+#   매핑의 원본은 `Chore.POINT_BY_DIFFICULTY` — 분담안 스냅샷 등 도메인 로직과
+#   응답 직렬화가 같은 값을 쓴다.
 # - 요일은 정수 배열(0=월 ~ 6=일) 외에 한글 라벨을 함께 노출한다.
-# 본 매핑은 응답 직렬화 시에만 사용한다 — Chore 모델 자체에는 보관하지 않는다.
 
-_POINT_BY_DIFFICULTY: dict[int, int] = {1: 40, 2: 80, 3: 120, 4: 160, 5: 200}
 _DIFFICULTY_LABEL_BY_DIFFICULTY: dict[int, str] = {
     1: "쉬움",
     2: "쉬움",
@@ -57,7 +57,7 @@ def _difficulty_label(value: int) -> str:
 
 
 def _point_for_difficulty(value: int) -> int:
-    return _POINT_BY_DIFFICULTY.get(value, 0)
+    return Chore.POINT_BY_DIFFICULTY.get(value, 0)
 
 
 def _weekday_labels(repeat_days: list[int]) -> list[str]:
@@ -140,8 +140,8 @@ class HomeCreateSerializer(serializers.Serializer):
         )
         repeat_days = serializers.ListField(
             child=serializers.ChoiceField(choices=Chore.Weekday.choices),
-            default=list,
-            help_text="반복 요일 정수 목록 (0=월 ~ 6=일). 비반복이면 빈 배열.",
+            allow_empty=False,
+            help_text="반복 요일 정수 목록 (0=월 ~ 6=일). 최소 1개 필수.",
         )
         difficulty = serializers.ChoiceField(
             choices=Chore.Difficulty.choices,
@@ -427,8 +427,8 @@ class HomeChoreCreateSerializer(serializers.Serializer):
     )
     repeat_days = serializers.ListField(
         child=serializers.ChoiceField(choices=Chore.Weekday.choices),
-        default=list,
-        help_text="반복 요일 정수 배열 (0=월 ~ 6=일). 비반복이면 빈 배열.",
+        allow_empty=False,
+        help_text="반복 요일 정수 배열 (0=월 ~ 6=일). 최소 1개 필수.",
     )
     difficulty = serializers.ChoiceField(
         choices=Chore.Difficulty.choices,
@@ -476,7 +476,8 @@ class HomeChoreUpdateSerializer(serializers.Serializer):
     repeat_days = serializers.ListField(
         child=serializers.ChoiceField(choices=Chore.Weekday.choices),
         required=False,
-        help_text="반복 요일 정수 배열 (0=월 ~ 6=일). 비반복이면 빈 배열.",
+        allow_empty=False,
+        help_text="반복 요일 정수 배열 (0=월 ~ 6=일). 전달 시 최소 1개 필수.",
     )
     difficulty = serializers.ChoiceField(
         choices=Chore.Difficulty.choices,
@@ -594,9 +595,11 @@ class HomeChoreOutputSerializer(serializers.ModelSerializer):
             "difficulty",
             "difficulty_label",
             "point",
+            "is_active",
         ]
         extra_kwargs = {
             "id": {"help_text": "HomeChore PK — 메모 컬렉션 경로의 부모 식별자."},
+            "is_active": {"help_text": "활성 여부. False 면 삭제(비활성화)된 집안일 — 상세 화면에서 안내 필요."},
         }
 
     def get_difficulty_label(self, obj: HomeChore) -> str:

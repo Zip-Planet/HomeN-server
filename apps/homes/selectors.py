@@ -73,7 +73,10 @@ def get_starter_packs() -> QuerySet[StarterPack]:
 
 
 def get_home_chores(home: Home) -> QuerySet[HomeChore]:
-    """집에 배정된 집안일 목록을 반환합니다.
+    """집에 배정된 **활성** 집안일 목록을 반환합니다.
+
+    삭제(비활성화)된 집안일은 목록에서 제외된다 — 히스토리 보존을 위해 row 는
+    남아있지만 리스트/분담안 대상이 아니다.
 
     Args:
         home: 조회할 Home 인스턴스.
@@ -81,11 +84,14 @@ def get_home_chores(home: Home) -> QuerySet[HomeChore]:
     Returns:
         HomeChore QuerySet (chore 관계 prefetch 포함).
     """
-    return HomeChore.objects.select_related("chore").filter(home=home).order_by("id")
+    return HomeChore.objects.select_related("chore").filter(home=home, is_active=True).order_by("id")
 
 
 def get_user_home_chore(user: User, home_chore_id: int) -> HomeChore | None:
     """유저의 집에 속한 HomeChore 한 건을 반환합니다. 없거나 다른 집이면 None.
+
+    삭제(비활성화)된 집안일도 반환한다 — 상세 화면에서 "삭제된 집안일" 안내를
+    위해 조회는 허용하며, 응답의 `is_active` 로 구분한다.
 
     Args:
         user: 호출 유저.
