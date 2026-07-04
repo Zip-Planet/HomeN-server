@@ -1,5 +1,20 @@
+from rest_framework import status
 from rest_framework.exceptions import APIException
 from rest_framework.views import exception_handler
+
+
+class Conflict(APIException):
+    """409 Conflict — 리소스의 현재 상태와 충돌하는 요청.
+
+    분담안 확정 시 생성 시점 이후 집안일/구성원 변경이 감지된 경우처럼,
+    클라이언트가 최신 상태를 반영(재생성)해야 해결되는 충돌에 사용한다.
+    `ValidationError` 처럼 `{code: message}` dict 를 넘기면
+    `custom_exception_handler` 가 code 로 매핑한다.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "요청이 리소스의 현재 상태와 충돌합니다."
+    default_code = "conflict"
 
 
 def custom_exception_handler(exc: Exception, context: dict) -> None:

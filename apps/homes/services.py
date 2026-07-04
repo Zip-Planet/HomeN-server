@@ -1,10 +1,24 @@
+import hashlib
+import random
 import secrets
 import string
+from datetime import date, timedelta
 from typing import Any
 
 from django.db import transaction
+from django.utils import timezone
 
-from apps.homes.models import Chore, Home, HomeChore, HomeChoreNote, HomeMember, Reward
+from apps.homes.models import (
+    AssignmentItem,
+    Chore,
+    ChoreCompletion,
+    Home,
+    HomeChore,
+    HomeChoreNote,
+    HomeMember,
+    Reward,
+    WeeklyAssignment,
+)
 from apps.homes.selectors import get_user_membership
 from apps.users.models import User
 
@@ -508,3 +522,287 @@ def delete_home_chore_note(*, user: User, home_chore_id: int, note_id: int) -> N
         raise NotNoteAuthorError("본인이 작성한 메모만 삭제할 수 있습니다.")
 
     note.delete()
+
+
+# ──────────────────────────────────────────
+# 분담안 (WeeklyAssignment)
+# ──────────────────────────────────────────
+
+MIN_ACTIVE_CHORES_FOR_ASSIGNMENT = 3
+CONTRIBUTION_LOOKBACK_WEEKS = 3
+
+
+class AssignmentError(HomeError):
+    """분담안 관련 오류의 공통 부모. `code` 는 API 에러 코드로 노출된다."""
+
+    code = "assignment_error"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class AssignmentNotFoundError(AssignmentError):
+    """분담안이 없거나 본인 집의 것이 아닐 때 발생합니다."""
+
+    code = "not_found"
+
+
+class AssignmentStateError(AssignmentError):
+    """분담안 상태/입력이 요청을 허용하지 않을 때 발생합니다 (400)."""
+
+
+class AssignmentConflictError(AssignmentError):
+    """생성 시점 이후 변경이 감지되어 확정할 수 없을 때 발생합니다 (409).
+
+    코드: chores_changed / members_changed / not_enough_chores.
+    재생성으로 최신 상태를 반영한 뒤 다시 확정해야 한다.
+    """
+
+
+def week_start_of(day: date) -> date:
+    """주어진 날짜가 속한 주차의 월요일 날짜를 반환합니다."""
+    return day - timedelta(days=day.weekday())
+
+
+def next_week_start(today: date | None = None) -> date:
+    """다음 주차의 월요일 날짜를 반환합니다.
+
+    Args:
+        today: 기준 날짜 (테스트용 주입). None 이면 서버 로컬 날짜.
+    """
+    base = today or timezone.localdate()
+    return week_start_of(base) + timedelta(days=7)
+
+
+def _chore_fingerprint(home: Home) -> str:
+    """활성 집안일 지문을 계산합니다 (생성 이후 집안일 변경 감지용).
+
+    활성 HomeChore 들의 (id, 이름, 카테고리, 반복요일, 난이도) 를 id 순으로
+    직렬화해 해시한다. 집안일 추가/수정(copy-on-write 로 chore_id 변경)/삭제
+    (비활성화) 모두 지문을 바꾼다.
+    """
+    rows = [
+        (hc.id, hc.chore.name, hc.chore.category, tuple(sorted(hc.chore.repeat_days)), hc.chore.difficulty)
+        for hc in HomeChore.objects.select_related("chore").filter(home=home, is_active=True).order_by("id")
+    ]
+    return hashlib.sha256(repr(rows).encode()).hexdigest()
+
+
+def _member_uids_snapshot(home: Home) -> list[str]:
+    """구성원 uid 스냅샷을 반환합니다 (생성 이후 구성원 변화 감지용)."""
+    return sorted(str(uid) for uid in HomeMember.objects.filter(home=home).values_list("user__uid", flat=True))
+
+
+def _recent_contribution_points(*, home: Home, week_start: date) -> dict[int, int]:
+    """최근 3주 기여도(완료 포인트 합)를 유저 PK 별로 집계합니다.
+
+    기여도 = 해당 주차 직전 3개 주차 동안 완료(`ChoreCompletion`)한 집안일의
+    포인트 합. 배정 동점 시 기여도가 낮은 멤버를 우선한다.
+    """
+    since = week_start - timedelta(weeks=CONTRIBUTION_LOOKBACK_WEEKS)
+    completions = (
+        ChoreCompletion.objects
+        .select_related("home_chore__chore")
+        .filter(home_chore__home=home, completed_by__isnull=False, date__gte=since, date__lt=week_start)
+    )
+    totals: dict[int, int] = {}
+    for completion in completions:
+        user_id = completion.completed_by_id
+        totals[user_id] = totals.get(user_id, 0) + completion.home_chore.chore.point
+    return totals
+
+
+def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssignment:
+    """분담안 생성 코어 — 권한/주차 중복 검증은 호출 측 책임.
+
+    배정 알고리즘 (specs/assignments.md):
+    1. 활성 집안일 × repeat_days 를 (집안일, 요일) 항목으로 펼친다.
+    2. 포인트 내림차순으로 정렬 후, 각 항목을 누적 배정 포인트가 가장 낮은
+       멤버에게 배정한다 (greedy/LPT — 멤버별 총합 최대한 균등).
+    3. 누적 동점 시 최근 3주 기여도가 낮은 멤버 우선, 그래도 동점이면 무작위
+       (재생성 시 동일 결과 반복 방지).
+
+    Raises:
+        AssignmentStateError: 활성 집안일이 3개 미만이거나 구성원이 없는 경우.
+    """
+    members = list(HomeMember.objects.select_related("user").filter(home=home))
+    if not members:
+        raise AssignmentStateError("집에 구성원이 없습니다.", code="no_members")
+
+    home_chores = list(HomeChore.objects.select_related("chore").filter(home=home, is_active=True))
+    if len(home_chores) < MIN_ACTIVE_CHORES_FOR_ASSIGNMENT:
+        raise AssignmentStateError(
+            f"분담안을 만들려면 활성 집안일이 {MIN_ACTIVE_CHORES_FOR_ASSIGNMENT}개 이상이어야"
+            " 합니다.",
+            code="not_enough_chores",
+        )
+
+    entries = [
+        (home_chore, weekday)
+        for home_chore in home_chores
+        for weekday in sorted(set(home_chore.chore.repeat_days))
+    ]
+    entries.sort(key=lambda entry: (-entry[0].chore.point, entry[0].id, entry[1]))
+
+    contribution = _recent_contribution_points(home=home, week_start=week_start)
+    totals: dict[int, int] = {member.user_id: 0 for member in members}
+    tie_break: dict[int, tuple[int, float]] = {
+        member.user_id: (contribution.get(member.user_id, 0), random.random()) for member in members
+    }
+    user_by_id = {member.user_id: member.user for member in members}
+
+    assigned: list[tuple[HomeChore, int, int]] = []
+    for home_chore, weekday in entries:
+        user_id = min(totals, key=lambda uid: (totals[uid], tie_break[uid][0], tie_break[uid][1]))
+        totals[user_id] += home_chore.chore.point
+        assigned.append((home_chore, weekday, user_id))
+
+    with transaction.atomic():
+        assignment = WeeklyAssignment.objects.create(
+            home=home,
+            week_start=week_start,
+            status=WeeklyAssignment.Status.PROPOSED,
+            generated_at=timezone.now(),
+            member_uids_snapshot=_member_uids_snapshot(home),
+            chore_fingerprint=_chore_fingerprint(home),
+        )
+        AssignmentItem.objects.bulk_create([
+            AssignmentItem(
+                assignment=assignment,
+                home_chore=home_chore,
+                weekday=weekday,
+                assignee=user_by_id[user_id],
+                chore_name=home_chore.chore.name,
+                category=home_chore.chore.category,
+                difficulty=home_chore.chore.difficulty,
+                point=home_chore.chore.point,
+            )
+            for home_chore, weekday, user_id in assigned
+        ])
+    return assignment
+
+
+def _get_admin_membership(user: User) -> HomeMember:
+    """분담안 생성/재생성/확정 권한(관리자) 검증 공통 헬퍼."""
+    membership = get_user_membership(user)
+    if membership is None or membership.role != HomeMember.Role.ADMIN:
+        raise NotHomeAdminError("관리자만 분담안을 생성/재생성/확정할 수 있습니다.")
+    return membership
+
+
+def generate_assignment(*, user: User, week_start: date | None = None) -> WeeklyAssignment:
+    """분담안을 수동 생성합니다 (관리자 전용).
+
+    Args:
+        user: 요청 유저 (관리자여야 함).
+        week_start: 대상 주차의 월요일 날짜. 생략 시 다음 주차. 과거 주차 불가.
+
+    Raises:
+        NotHomeAdminError: 관리자가 아닌 경우.
+        AssignmentStateError: 잘못된 주차 / 해당 주차 분담안 이미 존재 /
+            활성 집안일 3개 미만.
+    """
+    membership = _get_admin_membership(user)
+    home = membership.home
+
+    week_start = week_start or next_week_start()
+    if week_start.weekday() != 0:
+        raise AssignmentStateError("week_start 는 월요일 날짜여야 합니다.", code="invalid_week_start")
+    if week_start < week_start_of(timezone.localdate()):
+        raise AssignmentStateError("과거 주차의 분담안은 생성할 수 없습니다.", code="invalid_week_start")
+
+    if WeeklyAssignment.objects.filter(home=home, week_start=week_start).exists():
+        raise AssignmentStateError(
+            "해당 주차의 분담안이 이미 존재합니다. 재생성을 이용해 주세요.",
+            code="assignment_already_exists",
+        )
+
+    return _generate_assignment_for_home(home=home, week_start=week_start)
+
+
+def regenerate_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
+    """proposed 분담안을 폐기하고 최신 원본 기준으로 재생성합니다 (관리자 전용).
+
+    Raises:
+        NotHomeAdminError: 관리자가 아닌 경우.
+        AssignmentNotFoundError: 본인 집의 분담안이 아닌 경우.
+        AssignmentStateError: proposed 상태가 아니거나 활성 집안일 3개 미만.
+    """
+    membership = _get_admin_membership(user)
+
+    try:
+        assignment = WeeklyAssignment.objects.get(id=assignment_id, home=membership.home)
+    except WeeklyAssignment.DoesNotExist:
+        raise AssignmentNotFoundError("분담안을 찾을 수 없습니다.") from None
+
+    if assignment.status != WeeklyAssignment.Status.PROPOSED:
+        raise AssignmentStateError("제안됨 상태의 분담안만 재생성할 수 있습니다.", code="not_proposed")
+
+    with transaction.atomic():
+        week_start = assignment.week_start
+        assignment.delete()
+        return _generate_assignment_for_home(home=membership.home, week_start=week_start)
+
+
+def confirm_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
+    """proposed 분담안을 확정합니다 (관리자 전용).
+
+    확정 조건 (specs/assignments.md):
+    - proposed 상태 분담안 존재 / 같은 주차 확정본 없음 / 구성원 1명 이상
+    - 생성 시점 이후 집안일 변경 없음 (지문 일치)
+    - 활성 집안일 3개 이상
+    - 생성 시점 이후 구성원 변화 없음 (스냅샷 일치)
+
+    Raises:
+        NotHomeAdminError: 관리자가 아닌 경우.
+        AssignmentNotFoundError: 본인 집의 분담안이 아닌 경우.
+        AssignmentStateError: proposed 상태가 아니거나 같은 주차 확정본 존재 (400).
+        AssignmentConflictError: 집안일/구성원 변경 또는 활성 집안일 부족 감지 (409).
+    """
+    membership = _get_admin_membership(user)
+    home = membership.home
+
+    try:
+        assignment = WeeklyAssignment.objects.get(id=assignment_id, home=home)
+    except WeeklyAssignment.DoesNotExist:
+        raise AssignmentNotFoundError("분담안을 찾을 수 없습니다.") from None
+
+    if assignment.status != WeeklyAssignment.Status.PROPOSED:
+        raise AssignmentStateError("제안됨 상태의 분담안만 확정할 수 있습니다.", code="not_proposed")
+
+    if WeeklyAssignment.objects.filter(
+        home=home, week_start=assignment.week_start, status=WeeklyAssignment.Status.CONFIRMED
+    ).exists():
+        raise AssignmentStateError("해당 주차에 이미 확정된 분담안이 있습니다.", code="already_confirmed_week")
+
+    if not HomeMember.objects.filter(home=home).exists():
+        raise AssignmentStateError("집에 구성원이 없습니다.", code="no_members")
+
+    if _member_uids_snapshot(home) != assignment.member_uids_snapshot:
+        raise AssignmentConflictError(
+            "분담안 생성 이후 구성원이 변경되었습니다. 분담안을 재생성해 주세요.",
+            code="members_changed",
+        )
+
+    active_count = HomeChore.objects.filter(home=home, is_active=True).count()
+    if active_count < MIN_ACTIVE_CHORES_FOR_ASSIGNMENT:
+        raise AssignmentConflictError(
+            f"활성 집안일이 {MIN_ACTIVE_CHORES_FOR_ASSIGNMENT}개 미만이 되어 확정할 수 없습니다."
+            " 분담안을 재생성해 주세요.",
+            code="not_enough_chores",
+        )
+
+    if _chore_fingerprint(home) != assignment.chore_fingerprint:
+        raise AssignmentConflictError(
+            "분담안 생성 이후 집안일이 변경되었습니다. 분담안을 재생성해 주세요.",
+            code="chores_changed",
+        )
+
+    assignment.status = WeeklyAssignment.Status.CONFIRMED
+    assignment.confirmed_at = timezone.now()
+    assignment.confirmed_by = user
+    assignment.save(update_fields=["status", "confirmed_at", "confirmed_by", "updated_at"])
+    # TODO(알림): 확정 시 보드 카드 생성 + 전 구성원 앱푸시 (인프라 선정 후 구현 — specs/assignments.md)
+    return assignment
