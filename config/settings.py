@@ -156,6 +156,8 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 # Kakao OAuth2
 KAKAO_REST_API_KEY = env("KAKAO_REST_API_KEY", default="kakao-rest-api-key-placeholder")
+# Kakao SDK(네이티브 앱)로 발급된 인가 코드는 네이티브 앱 키로만 교환 가능 (미설정 시 REST 키로 폴백)
+KAKAO_NATIVE_APP_KEY = env("KAKAO_NATIVE_APP_KEY", default="")
 KAKAO_ADMIN_KEY = env("KAKAO_ADMIN_KEY", default="")
 KAKAO_CLIENT_SECRET = env("KAKAO_CLIENT_SECRET", default="")
 KAKAO_REDIRECT_URI = env("KAKAO_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/kakao/")

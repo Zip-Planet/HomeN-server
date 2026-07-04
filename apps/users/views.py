@@ -60,7 +60,7 @@ class KakaoLoginView(APIView):
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
             "| body | `code` | string | ✓ | 카카오 OAuth2 콜백으로 전달된 1회용 인가 코드 |\n"
-            "| body | `redirect_uri` | string |  | FE 가 authorize 에 쓴 redirect_uri. **인가 코드 발급 때와 동일**해야 함(불일치 시 KOE320). 접속 위치(집 LAN·외부)별로 값이 다른 환경에서 함께 전송. 생략 시 서버 `KAKAO_REDIRECT_URI` 폴백 |\n\n"
+            "| body | `redirect_uri` | string |  | FE 가 authorize 에 쓴 redirect_uri. **인가 코드 발급 때와 동일**해야 함(불일치 시 KOE320). 접속 위치(집 LAN·외부)별로 값이 다른 환경에서 함께 전송. 생략 시 서버 `KAKAO_REDIRECT_URI` 폴백. 네이티브 스킴(`kakao{앱키}://...`)이면 네이티브 앱 키로 교환 (Kakao SDK 코드 대응) |\n\n"
             "## 📤 응답 (200)\n"
             "| 위치 | 필드 | 타입 | 설명 |\n"
             "| --- | --- | --- | --- |\n"

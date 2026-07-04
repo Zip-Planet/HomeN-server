@@ -60,6 +60,9 @@
 > 불일치 시 카카오가 KOE320(`authorization code not found`)을 반환합니다. 접속 위치(집 LAN IP·외부 도메인 등)에
 > 따라 redirect_uri가 달라지는 환경에서는 이 값을 함께 보내 서버가 동일한 값으로 토큰을 교환하게 합니다.
 > 생략/빈 문자열이면 서버 설정 `KAKAO_REDIRECT_URI`로 폴백합니다. **사용하는 모든 redirect_uri는 카카오 콘솔에 미리 등록**되어 있어야 합니다.
+> 인가 코드는 발급받은 앱 키와 동일한 client_id로만 교환할 수 있으므로, 모바일 앱(Kakao SDK)의 코드처럼
+> redirect_uri가 네이티브 스킴(`kakao{NATIVE_APP_KEY}://...`)이면 서버는 `KAKAO_NATIVE_APP_KEY`로 교환합니다
+> (이때 `client_secret` 제외). 그 외에는 기존대로 `KAKAO_REST_API_KEY` + `client_secret`으로 교환합니다.
 
 **Response 200**
 ```json

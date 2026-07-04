@@ -54,7 +54,9 @@ class KakaoLoginSerializer(serializers.Serializer):
             "FE 가 카카오 authorize 요청에 사용한 redirect_uri. 인가 코드를 발급받을 때와 "
             "글자 단위로 동일해야 한다(불일치 시 카카오 KOE320 'authorization code not found'). "
             "접속 위치(집 LAN IP·외부 도메인 등)에 따라 redirect_uri 가 달라지는 환경에서 이 값을 함께 보낸다. "
-            "생략/빈 문자열이면 서버 설정 KAKAO_REDIRECT_URI 로 폴백한다."
+            "생략/빈 문자열이면 서버 설정 KAKAO_REDIRECT_URI 로 폴백한다. "
+            "네이티브 스킴(kakao{NATIVE_APP_KEY}://...)이면 서버는 네이티브 앱 키로 토큰을 교환한다 "
+            "(Kakao SDK 로 발급된 코드는 네이티브 키로만 교환 가능)."
         ),
     )
 

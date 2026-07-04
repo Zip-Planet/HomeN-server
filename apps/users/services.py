@@ -83,6 +83,11 @@ def _exchange_kakao_code(code: str, redirect_uri: str = "") -> dict:
     redirect_uri와 정확히 일치할 것을 요구합니다. 접속 위치(집 LAN·외부 도메인)에 따라
     redirect_uri가 달라지는 환경을 지원하기 위해, FE가 실제로 사용한 값을 받아 그대로 사용합니다.
 
+    또한 인가 코드는 발급받을 때 사용한 앱 키와 동일한 client_id로만 교환할 수 있습니다.
+    모바일 앱이 Kakao SDK로 받은 코드는 네이티브 앱 키로 발급되므로, redirect_uri가
+    우리 네이티브 스킴(kakao{NATIVE_APP_KEY}://)이면 네이티브 앱 키로 교환합니다.
+    이때 client_secret은 REST API 키 교환에만 적용되므로 제외합니다.
+
     Args:
         code: 카카오로부터 받은 인가 코드.
         redirect_uri: FE가 authorize에 사용한 redirect_uri. 빈 문자열이면
@@ -94,13 +99,19 @@ def _exchange_kakao_code(code: str, redirect_uri: str = "") -> dict:
     Raises:
         SocialLoginError: 토큰 교환에 실패한 경우.
     """
+    effective_redirect_uri = redirect_uri or settings.KAKAO_REDIRECT_URI
+    # 임의 redirect_uri에서 키를 추출하면 타 카카오 앱의 코드로 로그인이 가능해지므로,
+    # 서버에 설정된 네이티브 앱 키와 일치하는 스킴일 때만 네이티브 키를 사용한다.
+    is_native = bool(settings.KAKAO_NATIVE_APP_KEY) and effective_redirect_uri.startswith(
+        f"kakao{settings.KAKAO_NATIVE_APP_KEY}://"
+    )
     data = {
         "grant_type": "authorization_code",
-        "client_id": settings.KAKAO_REST_API_KEY,
-        "redirect_uri": redirect_uri or settings.KAKAO_REDIRECT_URI,
+        "client_id": settings.KAKAO_NATIVE_APP_KEY if is_native else settings.KAKAO_REST_API_KEY,
+        "redirect_uri": effective_redirect_uri,
         "code": code,
     }
-    if settings.KAKAO_CLIENT_SECRET:
+    if settings.KAKAO_CLIENT_SECRET and not is_native:
         data["client_secret"] = settings.KAKAO_CLIENT_SECRET
 
     response = requests.post(
@@ -110,7 +121,8 @@ def _exchange_kakao_code(code: str, redirect_uri: str = "") -> dict:
     )
     data = response.json()
     if "access_token" not in data:
-        raise SocialLoginError(f"카카오 토큰 교환 실패: {data.get('error_description', data)}")
+        error_detail = f"{data.get('error_code', '')} {data.get('error_description', data)}".strip()
+        raise SocialLoginError(f"카카오 토큰 교환 실패: {error_detail}")
     return data
 
 
