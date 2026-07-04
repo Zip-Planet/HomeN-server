@@ -77,6 +77,84 @@ class TestKakaoLogin:
 
         assert mock_post.call_args.kwargs["data"]["redirect_uri"] == settings.KAKAO_REDIRECT_URI
 
+    @patch("apps.users.services.requests.post")
+    def test_exchange_uses_native_app_key_for_native_scheme(self, mock_post):
+        """네이티브 스킴 redirect_uri면 네이티브 앱 키로 교환하고 client_secret은 제외한다 (KOE320 방지)."""
+        from django.test import override_settings
+
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        with override_settings(KAKAO_NATIVE_APP_KEY="native-key-123", KAKAO_CLIENT_SECRET="secret"):
+            _exchange_kakao_code("code-1", "kakaonative-key-123://oauth")
+
+        sent = mock_post.call_args.kwargs["data"]
+        assert sent["client_id"] == "native-key-123"
+        assert "client_secret" not in sent
+
+    @patch("apps.users.services.requests.post")
+    def test_exchange_uses_native_app_key_on_settings_fallback(self, mock_post):
+        """redirect_uri 미전송 + 서버 설정이 네이티브 스킴이어도 네이티브 앱 키로 교환한다 (모바일 앱 기본 경로)."""
+        from django.test import override_settings
+
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        with override_settings(
+            KAKAO_NATIVE_APP_KEY="native-key-123", KAKAO_REDIRECT_URI="kakaonative-key-123://oauth"
+        ):
+            _exchange_kakao_code("code-1")
+
+        assert mock_post.call_args.kwargs["data"]["client_id"] == "native-key-123"
+
+    @patch("apps.users.services.requests.post")
+    def test_exchange_uses_rest_key_for_web_redirect_uri(self, mock_post):
+        """웹 redirect_uri는 기존대로 REST API 키 + client_secret으로 교환한다 (회귀 방지)."""
+        from django.test import override_settings
+
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        with override_settings(
+            KAKAO_NATIVE_APP_KEY="native-key-123", KAKAO_REST_API_KEY="rest-key", KAKAO_CLIENT_SECRET="secret"
+        ):
+            _exchange_kakao_code("code-1", "http://localhost:5173/auth/kakao/callback")
+
+        sent = mock_post.call_args.kwargs["data"]
+        assert sent["client_id"] == "rest-key"
+        assert sent["client_secret"] == "secret"
+
+    @patch("apps.users.services.requests.post")
+    def test_exchange_falls_back_to_rest_key_without_native_key(self, mock_post):
+        """KAKAO_NATIVE_APP_KEY 미설정이면 네이티브 스킴이어도 REST 키로 교환한다 (하위호환)."""
+        from django.test import override_settings
+
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {"access_token": "t"}
+
+        with override_settings(KAKAO_NATIVE_APP_KEY="", KAKAO_REST_API_KEY="rest-key"):
+            _exchange_kakao_code("code-1", "kakaosome-key://oauth")
+
+        assert mock_post.call_args.kwargs["data"]["client_id"] == "rest-key"
+
+    @patch("apps.users.services.requests.post")
+    def test_exchange_error_includes_kakao_error_code(self, mock_post):
+        """교환 실패 시 카카오 error_code(예: KOE320)를 에러 메시지에 포함한다."""
+        from apps.users.services import _exchange_kakao_code
+
+        mock_post.return_value.json.return_value = {
+            "error": "invalid_grant",
+            "error_code": "KOE320",
+            "error_description": "authorization code not found",
+        }
+
+        with pytest.raises(SocialLoginError, match="KOE320"):
+            _exchange_kakao_code("used-code")
+
 
 @pytest.mark.django_db
 class TestAppleLogin:
