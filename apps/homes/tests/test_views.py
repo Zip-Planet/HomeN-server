@@ -1405,3 +1405,151 @@ class TestHomeChoreNoteDetailView:
         res = APIClient().delete(_note_detail_url(1, 1))
 
         assert res.status_code == 401
+
+
+# ── 분담안 API ─────────────────────────────────────────────────────────────────
+
+_ASSIGNMENT_URL = "/api/v1/homes/mine/assignments/"
+
+
+def _assignment_home(chore_count: int = 3):
+    admin = UserFactory()
+    home = HomeFactory()
+    HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+    for i in range(chore_count):
+        chore = ChoreFactory(starter_pack=None, name=f"집안일{i}", repeat_days=[0], difficulty=Chore.Difficulty.MEDIUM)
+        HomeChoreFactory(home=home, chore=chore)
+    return home, admin
+
+
+class TestHomeAssignmentView:
+    def test_수동_생성_201_및_응답_구조(self):
+        _home, admin = _assignment_home()
+        client = auth_client(admin)
+
+        res = client.post(_ASSIGNMENT_URL, {}, format="json")
+
+        assert res.status_code == 201
+        assert res.data["status"] == "proposed"
+        assert len(res.data["items"]) == 3
+        item = res.data["items"][0]
+        assert item["point"] == 120
+        assert item["assignee"]["uid"] == str(admin.uid)
+        assert item["is_completed"] is False
+        assert res.data["member_points"][0]["expected_point"] == 360
+
+    def test_구성원은_생성_403(self):
+        home, _admin = _assignment_home()
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        client = auth_client(member)
+
+        res = client.post(_ASSIGNMENT_URL, {}, format="json")
+
+        assert res.status_code == 403
+
+    def test_활성_집안일_부족_400(self):
+        _home, admin = _assignment_home(chore_count=2)
+        client = auth_client(admin)
+
+        res = client.post(_ASSIGNMENT_URL, {}, format="json")
+
+        assert res.status_code == 400
+        assert res.data["error"]["code"] == "not_enough_chores"
+
+    def test_조회_성공_구성원도_가능(self):
+        home, admin = _assignment_home()
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
+
+        res = auth_client(member).get(_ASSIGNMENT_URL)
+
+        assert res.status_code == 200
+        assert res.data["status"] == "proposed"
+
+    def test_분담안_없으면_404(self):
+        _home, admin = _assignment_home()
+        client = auth_client(admin)
+
+        res = client.get(_ASSIGNMENT_URL)
+
+        assert res.status_code == 404
+
+    def test_월요일_아닌_week_start_400(self):
+        _home, admin = _assignment_home()
+        client = auth_client(admin)
+
+        res = client.get(_ASSIGNMENT_URL, {"week_start": "2026-07-14"})  # 화요일
+
+        assert res.status_code == 400
+
+    def test_미인증_401(self):
+        assert APIClient().get(_ASSIGNMENT_URL).status_code == 401
+        assert APIClient().post(_ASSIGNMENT_URL, {}, format="json").status_code == 401
+
+
+class TestHomeAssignmentRegenerateConfirmView:
+    def _create(self, admin):
+        res = auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
+        assert res.status_code == 201
+        return res.data["id"]
+
+    def test_재생성_201(self):
+        _home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+
+        res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/regenerate/")
+
+        assert res.status_code == 201
+        assert res.data["id"] != assignment_id
+        assert res.data["status"] == "proposed"
+
+    def test_확정_200(self):
+        _home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+
+        res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+
+        assert res.status_code == 200
+        assert res.data["status"] == "confirmed"
+
+    def test_생성_이후_집안일_변경되면_확정_409(self):
+        home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+        chore = ChoreFactory(starter_pack=None, name="신규", repeat_days=[2])
+        HomeChoreFactory(home=home, chore=chore)
+
+        res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+
+        assert res.status_code == 409
+        assert res.data["error"]["code"] == "chores_changed"
+
+    def test_확정본_재생성_400(self):
+        _home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+        auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+
+        res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/regenerate/")
+
+        assert res.status_code == 400
+        assert res.data["error"]["code"] == "not_proposed"
+
+    def test_구성원은_확정_403(self):
+        home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+
+        res = auth_client(member).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+
+        assert res.status_code == 403
+
+    def test_다른_집_분담안_404(self):
+        _home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+        _other_home, other_admin = _assignment_home()
+
+        res = auth_client(other_admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+
+        assert res.status_code == 404

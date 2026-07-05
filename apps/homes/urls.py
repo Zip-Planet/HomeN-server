@@ -1,6 +1,9 @@
 from django.urls import path
 
 from apps.homes.views import (
+    HomeAssignmentConfirmView,
+    HomeAssignmentRegenerateView,
+    HomeAssignmentView,
     HomeChoreDetailView,
     HomeChoreListView,
     HomeChoreNoteDetailView,
@@ -34,6 +37,9 @@ home_urlpatterns = [
         "mine/chores/<int:home_chore_id>/notes/<int:note_id>/",
         HomeChoreNoteDetailView.as_view(),
     ),
+    path("mine/assignments/", HomeAssignmentView.as_view()),
+    path("mine/assignments/<int:assignment_id>/regenerate/", HomeAssignmentRegenerateView.as_view()),
+    path("mine/assignments/<int:assignment_id>/confirm/", HomeAssignmentConfirmView.as_view()),
     path("invite/<str:code>/", HomeInviteView.as_view()),
     path("join/", HomeJoinView.as_view()),
 ]

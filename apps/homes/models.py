@@ -266,6 +266,113 @@ class ChoreCompletion(models.Model):
         return f"chore_completion:{self.pk}"
 
 
+class WeeklyAssignment(models.Model):
+    """분담안 — 한 집의 한 주차에 대한 집안일 배정 묶음.
+
+    상태 전이: proposed → confirmed → expired. 재생성 시 기존 proposed 는
+    폐기(물리 삭제)되고 새 proposed 가 생성된다. confirmed/expired 는 불변
+    히스토리로 보존한다. (specs/assignments.md 참조)
+
+    생성 시점 스냅샷(`member_uids_snapshot`, `chore_fingerprint`)은 확정 시점에
+    현재 상태와 비교해 "생성 이후 집안일/구성원 변경 없음" 확정 조건을 검증한다.
+
+    Attributes:
+        home: 대상 집.
+        week_start: 적용 주차의 월요일 날짜.
+        status: proposed / confirmed / expired.
+        generated_at: 분담안 생성(재생성) 시점.
+        member_uids_snapshot: 생성 시점 구성원 uid 문자열 목록 (정렬).
+        chore_fingerprint: 생성 시점 활성 집안일 지문 (sha256 hex).
+        confirmed_at: 확정 시각 (미확정이면 null).
+        confirmed_by: 확정한 관리자 (자동 확정이면 null).
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "제안됨"
+        CONFIRMED = "confirmed", "확정됨"
+        EXPIRED = "expired", "만료됨"
+
+    home = models.ForeignKey(Home, on_delete=models.CASCADE, related_name="weekly_assignments")
+    week_start = models.DateField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PROPOSED)
+    generated_at = models.DateTimeField()
+    member_uids_snapshot = ArrayField(models.CharField(max_length=36), default=list)
+    chore_fingerprint = models.CharField(max_length=64)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="confirmed_assignments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "weekly_assignments"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["home", "week_start"],
+                condition=models.Q(status="proposed"),
+                name="uniq_proposed_assignment_per_home_week",
+            ),
+            models.UniqueConstraint(
+                fields=["home", "week_start"],
+                condition=models.Q(status="confirmed"),
+                name="uniq_confirmed_assignment_per_home_week",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"weekly_assignment:{self.pk}:{self.week_start}:{self.status}"
+
+
+class AssignmentItem(models.Model):
+    """분담안 항목 — 주차별 실행 집안일 한 건 (요일 × 집안일 × 담당자).
+
+    집안일명/카테고리/난이도/포인트는 생성 시점 **스냅샷** — 이후 원본 집안일이
+    수정·삭제(비활성화)돼도 확정·만료 분담안의 값은 변하지 않는다 (히스토리 보존).
+    완료 여부는 별도 저장하지 않고 `ChoreCompletion(home_chore, date)` 과 조인해
+    계산한다 (date = week_start + weekday).
+
+    Attributes:
+        assignment: 소속 분담안.
+        home_chore: 원본 집안일 링크 (원본이 물리 삭제돼도 항목 유지 — SET_NULL).
+        weekday: 실행 요일 (0=월 ~ 6=일).
+        assignee: 자동 배정된 담당자 (탈퇴 시 null).
+        chore_name / category / difficulty / point: 생성 시점 스냅샷.
+    """
+
+    assignment = models.ForeignKey(WeeklyAssignment, on_delete=models.CASCADE, related_name="items")
+    home_chore = models.ForeignKey(
+        HomeChore,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignment_items",
+    )
+    weekday = models.IntegerField(choices=Chore.Weekday.choices)
+    assignee = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assignment_items",
+    )
+    chore_name = models.CharField(max_length=20)
+    category = models.IntegerField(choices=ChoreCategory.choices)
+    difficulty = models.IntegerField(choices=Chore.Difficulty.choices)
+    point = models.IntegerField()
+
+    class Meta:
+        db_table = "assignment_items"
+        ordering = ["weekday", "id"]
+
+    def __str__(self) -> str:
+        return f"assignment_item:{self.pk}:{self.chore_name}"
+
+
 class Reward(models.Model):
     """리워드 모델.
 

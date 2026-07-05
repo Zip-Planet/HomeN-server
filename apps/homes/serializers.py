@@ -17,11 +17,13 @@
 """
 
 import re
+from datetime import timedelta
 
 from drf_spectacular.utils import OpenApiExample, extend_schema_serializer
 from rest_framework import serializers
 
 from apps.homes.models import (
+    AssignmentItem,
     Chore,
     ChoreCategory,
     Home,
@@ -31,6 +33,7 @@ from apps.homes.models import (
     HomeImageType,
     Reward,
     StarterPack,
+    WeeklyAssignment,
 )
 
 
@@ -774,3 +777,154 @@ class HomeInviteDetailSerializer(serializers.ModelSerializer):
 
     def get_members(self, obj: Home) -> list:
         return HomeMemberSerializer(obj.members.all(), many=True).data
+
+
+# ── 분담안 (WeeklyAssignment) ─────────────────────────────────────────────────
+
+
+class AssignmentWeekQuerySerializer(serializers.Serializer):
+    """분담안 조회 쿼리 파라미터.
+
+    `week_start` 는 조회할 주차의 월요일 날짜. 생략 시 다음 주차를 조회한다.
+    """
+
+    week_start = serializers.DateField(
+        required=False,
+        help_text="조회할 주차의 월요일 날짜 (YYYY-MM-DD). 생략 시 다음 주차.",
+    )
+
+    def validate_week_start(self, value):
+        if value.weekday() != 0:
+            raise serializers.ValidationError("week_start 는 월요일 날짜여야 합니다.")
+        return value
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample(
+            "다음 주 분담안 수동 생성",
+            value={"week_start": "2026-07-13"},
+            request_only=True,
+        ),
+    ]
+)
+class AssignmentCreateSerializer(serializers.Serializer):
+    """분담안 수동 생성 요청 (관리자 전용).
+
+    `week_start` 생략 시 다음 주차 분담안을 생성한다. 과거 주차는 불가.
+    수동 생성된 주차는 일요일 자동 생성에서 스킵된다.
+    """
+
+    week_start = serializers.DateField(
+        required=False,
+        help_text="대상 주차의 월요일 날짜 (YYYY-MM-DD). 생략 시 다음 주차. 과거 주차 불가.",
+    )
+
+
+class AssignmentItemOutputSerializer(serializers.ModelSerializer):
+    """분담안 항목(주차별 실행 집안일) 응답.
+
+    집안일명/카테고리/난이도/포인트는 분담안 생성 시점 **스냅샷** — 이후 원본
+    수정·삭제에 영향받지 않는다. `is_completed` 는 `ChoreCompletion` 과 조인해
+    계산한다 (context["completed_keys"] 필요).
+    """
+
+    weekday_label = serializers.SerializerMethodField(help_text="요일 한글 라벨 (예: '월').")
+    category_label = serializers.CharField(source="get_category_display", help_text="카테고리 한국어.")
+    difficulty_label = serializers.SerializerMethodField(
+        help_text="난이도 화면 라벨 (3단계 매핑): 1~2='쉬움', 3~4='중간', 5='어려움'.",
+    )
+    assignee = serializers.SerializerMethodField(
+        help_text="담당자 {uid, name, profile_image}. 탈퇴한 유저면 null.",
+    )
+    date = serializers.SerializerMethodField(help_text="실행 날짜 (week_start + weekday).")
+    is_completed = serializers.SerializerMethodField(
+        help_text="완료 여부 — 해당 날짜의 ChoreCompletion 존재 여부.",
+    )
+
+    class Meta:
+        model = AssignmentItem
+        fields = [
+            "id",
+            "home_chore_id",
+            "weekday",
+            "weekday_label",
+            "chore_name",
+            "category",
+            "category_label",
+            "difficulty",
+            "difficulty_label",
+            "point",
+            "assignee",
+            "date",
+            "is_completed",
+        ]
+        extra_kwargs = {
+            "id": {"help_text": "분담안 항목 PK."},
+            "weekday": {"help_text": "실행 요일 (0=월 ~ 6=일)."},
+            "chore_name": {"help_text": "생성 시점 집안일명 (스냅샷)."},
+            "category": {"help_text": "생성 시점 카테고리 enum (스냅샷)."},
+            "difficulty": {"help_text": "생성 시점 난이도 enum (스냅샷)."},
+            "point": {"help_text": "생성 시점 포인트 (스냅샷)."},
+        }
+
+    def get_weekday_label(self, obj: AssignmentItem) -> str:
+        return Chore.Weekday(obj.weekday).label
+
+    def get_difficulty_label(self, obj: AssignmentItem) -> str:
+        return _difficulty_label(obj.difficulty)
+
+    def get_assignee(self, obj: AssignmentItem) -> dict | None:
+        if obj.assignee is None:
+            return None
+        return {
+            "uid": str(obj.assignee.uid),
+            "name": obj.assignee.name,
+            "profile_image": obj.assignee.profile_image,
+        }
+
+    def get_date(self, obj: AssignmentItem) -> str:
+        return str(obj.assignment.week_start + timedelta(days=obj.weekday))
+
+    def get_is_completed(self, obj: AssignmentItem) -> bool:
+        completed_keys = self.context.get("completed_keys", set())
+        item_date = obj.assignment.week_start + timedelta(days=obj.weekday)
+        return (obj.home_chore_id, item_date) in completed_keys
+
+
+class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
+    """분담안 응답 — 항목 목록과 멤버별 예상 포인트 합계 포함."""
+
+    items = AssignmentItemOutputSerializer(many=True, help_text="분담안 항목 목록 (요일순).")
+    member_points = serializers.SerializerMethodField(
+        help_text="멤버별 예상 배정 포인트 합계 [{uid, name, expected_point}].",
+    )
+
+    class Meta:
+        model = WeeklyAssignment
+        fields = [
+            "id",
+            "week_start",
+            "status",
+            "generated_at",
+            "confirmed_at",
+            "items",
+            "member_points",
+        ]
+        extra_kwargs = {
+            "id": {"help_text": "분담안 PK."},
+            "week_start": {"help_text": "적용 주차의 월요일 날짜."},
+            "status": {"help_text": "proposed(제안됨) / confirmed(확정됨) / expired(만료됨)."},
+            "generated_at": {"help_text": "분담안 생성(재생성) 시점."},
+            "confirmed_at": {"help_text": "확정 시각. 미확정이면 null."},
+        }
+
+    def get_member_points(self, obj: WeeklyAssignment) -> list[dict]:
+        totals: dict[str, dict] = {}
+        for item in obj.items.all():
+            if item.assignee is None:
+                continue
+            uid = str(item.assignee.uid)
+            entry = totals.setdefault(uid, {"uid": uid, "name": item.assignee.name, "expected_point": 0})
+            entry["expected_point"] += item.point
+        return sorted(totals.values(), key=lambda e: e["uid"])
