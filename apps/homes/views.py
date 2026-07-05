@@ -1914,6 +1914,104 @@ def _serialize_assignment(assignment) -> dict:
     return WeeklyAssignmentOutputSerializer(assignment, context={"completed_keys": completed_keys}).data
 
 
+# 분담안 응답 필드 표 — 조회/생성/재생성/확정 4개 엔드포인트가 동일 구조를 반환한다.
+_ASSIGNMENT_OUTPUT_TABLE = (
+    "| 위치 | 필드 | 타입 | 설명 |\n"
+    "| --- | --- | --- | --- |\n"
+    "| body | `id` | integer | 분담안 PK |\n"
+    "| body | `week_start` | date | 적용 주차의 월요일 날짜 |\n"
+    "| body | `status` | string | `proposed`(제안됨) / `confirmed`(확정됨) / `expired`(만료됨) |\n"
+    "| body | `generated_at` | datetime | 분담안 생성(재생성) 시점 |\n"
+    "| body | `confirmed_at` | datetime | 확정 시각 (미확정이면 null) |\n"
+    "| body | `items[].id` | integer | 분담안 항목 PK (요일순 정렬) |\n"
+    "| body | `items[].home_chore_id` | integer | 원본 집안일(HomeChore) PK — 원본 물리 삭제 시 null |\n"
+    "| body | `items[].weekday` / `weekday_label` | integer / string | 실행 요일 (0=월 ~ 6=일) / 한글 라벨 |\n"
+    "| body | `items[].chore_name` | string | 집안일명 (생성 시점 **스냅샷** — 이후 원본 수정에 불변) |\n"
+    "| body | `items[].category` / `category_label` | integer / string | 카테고리 enum / 한글 (스냅샷) |\n"
+    "| body | `items[].difficulty` / `difficulty_label` | integer / string | 난이도 enum / 3단계 라벨 (스냅샷) |\n"
+    "| body | `items[].point` | integer | 포인트 (생성 시점 스냅샷) |\n"
+    "| body | `items[].assignee` | object | 담당자 `{uid, name, profile_image}` — 탈퇴 시 null |\n"
+    "| body | `items[].date` | date | 실행 날짜 (week_start + weekday) |\n"
+    "| body | `items[].is_completed` | boolean | 완료 여부 (해당 날짜 ChoreCompletion 존재) |\n"
+    "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, expected_point}` |\n\n"
+)
+
+# 💻 예제 코드블록용 응답 JSON (항목 1건으로 축약)
+_ASSIGNMENT_EXAMPLE_JSON = (
+    "```json\n"
+    "{\n"
+    "  \"id\": 7,\n"
+    "  \"week_start\": \"2026-07-13\",\n"
+    "  \"status\": \"proposed\",\n"
+    "  \"generated_at\": \"2026-07-12T21:05:00+09:00\",\n"
+    "  \"confirmed_at\": null,\n"
+    "  \"items\": [\n"
+    "    {\n"
+    "      \"id\": 31, \"home_chore_id\": 3,\n"
+    "      \"weekday\": 0, \"weekday_label\": \"월\",\n"
+    "      \"chore_name\": \"분리수거\", \"category\": 1, \"category_label\": \"쓰레기\",\n"
+    "      \"difficulty\": 3, \"difficulty_label\": \"중간\", \"point\": 120,\n"
+    "      \"assignee\": {\"uid\": \"8f3e…\", \"name\": \"김현수\", \"profile_image\": 2},\n"
+    "      \"date\": \"2026-07-13\", \"is_completed\": false\n"
+    "    }\n"
+    "  ],\n"
+    "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"expected_point\": 120}]\n"
+    "}\n"
+    "```\n"
+)
+
+# Swagger 응답 예시(OpenApiExample)용 값 — proposed 기본, 확정 뷰는 confirmed 변형 사용.
+_ASSIGNMENT_EXAMPLE_VALUE = {
+    "id": 7,
+    "week_start": "2026-07-13",
+    "status": "proposed",
+    "generated_at": "2026-07-12T21:05:00+09:00",
+    "confirmed_at": None,
+    "items": [
+        {
+            "id": 31,
+            "home_chore_id": 3,
+            "weekday": 0,
+            "weekday_label": "월",
+            "chore_name": "분리수거",
+            "category": 1,
+            "category_label": "쓰레기",
+            "difficulty": 3,
+            "difficulty_label": "중간",
+            "point": 120,
+            "assignee": {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "profile_image": 2},
+            "date": "2026-07-13",
+            "is_completed": False,
+        },
+        {
+            "id": 32,
+            "home_chore_id": 4,
+            "weekday": 5,
+            "weekday_label": "토",
+            "chore_name": "화장실 청소",
+            "category": 2,
+            "category_label": "욕실",
+            "difficulty": 4,
+            "difficulty_label": "중간",
+            "point": 160,
+            "assignee": {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "profile_image": 5},
+            "date": "2026-07-18",
+            "is_completed": False,
+        },
+    ],
+    "member_points": [
+        {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "expected_point": 160},
+        {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "expected_point": 120},
+    ],
+}
+
+_ASSIGNMENT_CONFIRMED_EXAMPLE_VALUE = {
+    **_ASSIGNMENT_EXAMPLE_VALUE,
+    "status": "confirmed",
+    "confirmed_at": "2026-07-12T22:10:00+09:00",
+}
+
+
 class HomeAssignmentView(APIView):
     """분담안 조회(모든 구성원) / 수동 생성(관리자 전용).
 
@@ -1928,16 +2026,28 @@ class HomeAssignmentView(APIView):
             "## 🔥 설명\n"
             "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **다음 주차**. "
             "모든 구성원이 조회 가능하다. 항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
             "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 다음 주차 |\n\n"
-            "## ❌ 에러\n"
+            "## 📤 응답 (200)\n"
+            + _ASSIGNMENT_OUTPUT_TABLE
+            + "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 400 | `invalid` | week_start 가 월요일이 아님 |\n"
             "| 401 | `authentication_failed` | 토큰 누락/만료 |\n"
-            "| 404 | `not_found` | 속한 집 없음 / 해당 주차 분담안 없음 |\n"
+            "| 404 | `not_found` | 속한 집 없음 / 해당 주차 분담안 없음 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X GET '{host}/api/v1/homes/mine/assignments/?week_start=2026-07-13' \\\n"
+            "     -H 'Authorization: Bearer <access>'\n"
+            "```\n\n"
+            "**응답 (200):**\n"
+            + _ASSIGNMENT_EXAMPLE_JSON
         ),
         parameters=[
             OpenApiParameter(
@@ -1953,6 +2063,12 @@ class HomeAssignmentView(APIView):
             404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집 없음 / 분담안 없음."),
         },
         examples=[
+            OpenApiExample(
+                "분담안 (proposed)",
+                value=_ASSIGNMENT_EXAMPLE_VALUE,
+                response_only=True,
+                status_codes=["200"],
+            ),
             _AUTH_FAILED_EXAMPLE,
             error_example(code="not_found", message="해당 주차의 분담안이 없습니다.", name="분담안 없음"),
         ],
@@ -1981,14 +2097,32 @@ class HomeAssignmentView(APIView):
             "수동 생성된 주차는 일요일 자동 생성에서 스킵된다.\n\n"
             "배정: 활성 집안일 × 반복 요일을 펼쳐 멤버별 예상 포인트 총합이 균등하도록 배정한다 "
             "(동점 시 최근 3주 기여도 낮은 멤버 우선). 활성 집안일 3개 이상 필요.\n\n"
-            "## ❌ 에러\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. **관리자만** 호출 가능 (구성원은 403).\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| body | `week_start` | date |  | 대상 주차의 월요일 (YYYY-MM-DD). 생략 시 다음 주차. 과거 불가 |\n\n"
+            "## 📤 응답 (201)\n"
+            + _ASSIGNMENT_OUTPUT_TABLE
+            + "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 400 | `invalid_week_start` | 월요일 아님 / 과거 주차 |\n"
             "| 400 | `assignment_already_exists` | 해당 주차 분담안 이미 존재 |\n"
             "| 400 | `not_enough_chores` | 활성 집안일 3개 미만 |\n"
             "| 403 | `permission_denied` | 관리자 아님 |\n"
-            "| 404 | `not_found` | 속한 집 없음 |\n"
+            "| 404 | `not_found` | 속한 집 없음 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X POST '{host}/api/v1/homes/mine/assignments/' \\\n"
+            "     -H 'Authorization: Bearer <access>' \\\n"
+            "     -H 'Content-Type: application/json' \\\n"
+            "     -d '{\"week_start\": \"2026-07-13\"}'\n"
+            "```\n\n"
+            "**응답 (201):**\n"
+            + _ASSIGNMENT_EXAMPLE_JSON
         ),
         request=AssignmentCreateSerializer,
         responses={
@@ -1998,6 +2132,12 @@ class HomeAssignmentView(APIView):
             403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자 아님."),
         },
         examples=[
+            OpenApiExample(
+                "생성된 분담안 (proposed)",
+                value=_ASSIGNMENT_EXAMPLE_VALUE,
+                response_only=True,
+                status_codes=["201"],
+            ),
             _AUTH_FAILED_EXAMPLE,
             error_example(
                 code="not_enough_chores",
@@ -2030,13 +2170,31 @@ class HomeAssignmentRegenerateView(APIView):
             "## 🔥 설명\n"
             "proposed 상태의 분담안을 폐기하고 최신 원본(집안일/구성원) 기준으로 새 분담안을 생성한다. "
             "**관리자 전용**. confirmed 상태는 재생성 불가. 동점 배정에 무작위성이 있어 동일 결과 반복을 피한다.\n\n"
-            "## ❌ 에러\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. **관리자만** 호출 가능 (구성원은 403).\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `assignment_id` | integer | ✓ | 재생성할 분담안 PK (proposed 상태) |\n\n"
+            "요청 본문 없음.\n\n"
+            "## 📤 응답 (201)\n"
+            "기존 분담안은 폐기되고 **새 PK 의 분담안**이 반환된다.\n\n"
+            + _ASSIGNMENT_OUTPUT_TABLE
+            + "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 400 | `not_proposed` | proposed 상태가 아님 |\n"
             "| 400 | `not_enough_chores` | 활성 집안일 3개 미만 |\n"
             "| 403 | `permission_denied` | 관리자 아님 |\n"
-            "| 404 | `not_found` | 분담안 없음/다른 집 |\n"
+            "| 404 | `not_found` | 분담안 없음/다른 집 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X POST '{host}/api/v1/homes/mine/assignments/7/regenerate/' \\\n"
+            "     -H 'Authorization: Bearer <access>'\n"
+            "```\n\n"
+            "**응답 (201):**\n"
+            + _ASSIGNMENT_EXAMPLE_JSON
         ),
         request=None,
         responses={
@@ -2047,6 +2205,12 @@ class HomeAssignmentRegenerateView(APIView):
             404: OpenApiResponse(response=ErrorResponseSerializer, description="분담안 없음."),
         },
         examples=[
+            OpenApiExample(
+                "재생성된 분담안 (proposed)",
+                value=_ASSIGNMENT_EXAMPLE_VALUE,
+                response_only=True,
+                status_codes=["201"],
+            ),
             _AUTH_FAILED_EXAMPLE,
             error_example(
                 code="not_proposed", message="제안됨 상태의 분담안만 재생성할 수 있습니다.", name="상태 오류"
@@ -2078,7 +2242,17 @@ class HomeAssignmentConfirmView(APIView):
             "확정 조건: proposed 상태 / 같은 주차 확정본 없음 / 구성원 1명 이상 / "
             "생성 시점 이후 **집안일 변경 없음** / **활성 집안일 3개 이상** / **구성원 변화 없음**. "
             "뒤의 3개 조건 위반 시 409 를 반환하며, 재생성 후 다시 확정해야 한다.\n\n"
-            "## ❌ 에러\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. **관리자만** 호출 가능 (구성원은 403).\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `assignment_id` | integer | ✓ | 확정할 분담안 PK (proposed 상태) |\n\n"
+            "요청 본문 없음.\n\n"
+            "## 📤 응답 (200)\n"
+            "`status` 가 `confirmed` 로 전이되고 `confirmed_at` 이 채워진다.\n\n"
+            + _ASSIGNMENT_OUTPUT_TABLE
+            + "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 400 | `not_proposed` | proposed 상태가 아님 |\n"
@@ -2087,7 +2261,14 @@ class HomeAssignmentConfirmView(APIView):
             "| 404 | `not_found` | 분담안 없음/다른 집 |\n"
             "| 409 | `chores_changed` | 생성 이후 집안일 변경 감지 — 재생성 필요 |\n"
             "| 409 | `members_changed` | 생성 이후 구성원 변화 감지 — 재생성 필요 |\n"
-            "| 409 | `not_enough_chores` | 활성 집안일 3개 미만 — 재생성 필요 |\n"
+            "| 409 | `not_enough_chores` | 활성 집안일 3개 미만 — 재생성 필요 |\n\n"
+            "## 💻 예제\n"
+            "**요청:**\n"
+            "```bash\n"
+            "curl -X POST '{host}/api/v1/homes/mine/assignments/7/confirm/' \\\n"
+            "     -H 'Authorization: Bearer <access>'\n"
+            "```\n\n"
+            "**응답 (200):** 위 분담안 응답 구조와 동일하되 `status: \"confirmed\"`, `confirmed_at` 채워짐.\n"
         ),
         request=None,
         responses={
@@ -2099,6 +2280,12 @@ class HomeAssignmentConfirmView(APIView):
             409: OpenApiResponse(response=ErrorResponseSerializer, description="생성 이후 변경 감지 — 재생성 필요."),
         },
         examples=[
+            OpenApiExample(
+                "확정된 분담안 (confirmed)",
+                value=_ASSIGNMENT_CONFIRMED_EXAMPLE_VALUE,
+                response_only=True,
+                status_codes=["200"],
+            ),
             _AUTH_FAILED_EXAMPLE,
             error_example(
                 code="chores_changed",
