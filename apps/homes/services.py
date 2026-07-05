@@ -769,6 +769,18 @@ def confirm_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
     except WeeklyAssignment.DoesNotExist:
         raise AssignmentNotFoundError("분담안을 찾을 수 없습니다.") from None
 
+    _check_confirm_conditions(home=home, assignment=assignment)
+    return _mark_confirmed(assignment, confirmed_by=user)
+
+
+def _check_confirm_conditions(*, home: Home, assignment: WeeklyAssignment) -> None:
+    """확정 조건을 검증합니다 (수동/자동 확정 공용).
+
+    Raises:
+        AssignmentStateError: proposed 상태가 아니거나 같은 주차 확정본 존재,
+            구성원 없음 (400).
+        AssignmentConflictError: 집안일/구성원 변경 또는 활성 집안일 부족 감지 (409).
+    """
     if assignment.status != WeeklyAssignment.Status.PROPOSED:
         raise AssignmentStateError("제안됨 상태의 분담안만 확정할 수 있습니다.", code="not_proposed")
 
@@ -800,9 +812,87 @@ def confirm_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
             code="chores_changed",
         )
 
+
+def _mark_confirmed(assignment: WeeklyAssignment, *, confirmed_by: User | None) -> WeeklyAssignment:
+    """분담안을 확정 상태로 전이합니다 (자동 확정이면 confirmed_by=None)."""
     assignment.status = WeeklyAssignment.Status.CONFIRMED
     assignment.confirmed_at = timezone.now()
-    assignment.confirmed_by = user
+    assignment.confirmed_by = confirmed_by
     assignment.save(update_fields=["status", "confirmed_at", "confirmed_by", "updated_at"])
     # TODO(알림): 확정 시 보드 카드 생성 + 전 구성원 앱푸시 (인프라 선정 후 구현 — specs/assignments.md)
     return assignment
+
+
+# ──────────────────────────────────────────
+# 분담안 스케줄 배치 (management command 에서 호출)
+# ──────────────────────────────────────────
+
+
+def generate_weekly_assignments(*, today: date | None = None) -> tuple[int, int]:
+    """모든 활성 집에 다음 주차 분담안을 자동 생성합니다 (매주 일요일 21:05).
+
+    해당 주차 분담안이 이미 있으면(관리자 수동 생성 포함) 그 집은 스킵한다.
+    활성 집안일 3개 미만·구성원 없음도 스킵한다. 멱등 — 중복 실행 안전.
+
+    Args:
+        today: 기준 날짜 (테스트용 주입). None 이면 서버 로컬 날짜.
+
+    Returns:
+        (생성 건수, 스킵 건수).
+    """
+    week_start = next_week_start(today)
+    created = skipped = 0
+    for home in Home.objects.filter(status=Home.Status.ACTIVE):
+        if WeeklyAssignment.objects.filter(home=home, week_start=week_start).exists():
+            skipped += 1
+            continue
+        try:
+            _generate_assignment_for_home(home=home, week_start=week_start)
+        except AssignmentStateError:
+            skipped += 1
+            continue
+        created += 1
+    return created, skipped
+
+
+def auto_confirm_due_assignments(*, today: date | None = None) -> tuple[int, int]:
+    """시작된 주차의 proposed 분담안을 자동 확정합니다 (매주 월요일 00:00).
+
+    확정 조건을 만족하는 것만 확정(`confirmed_by=None`)하고, 불만족은 proposed
+    로 유지한다 — 관리자가 재생성하거나 수동 확정해야 한다. 멱등.
+
+    Args:
+        today: 기준 날짜 (테스트용 주입). None 이면 서버 로컬 날짜.
+
+    Returns:
+        (확정 건수, 스킵 건수).
+    """
+    week_start = week_start_of(today or timezone.localdate())
+    confirmed = skipped = 0
+    due = WeeklyAssignment.objects.select_related("home").filter(
+        status=WeeklyAssignment.Status.PROPOSED, week_start=week_start
+    )
+    for assignment in due:
+        try:
+            _check_confirm_conditions(home=assignment.home, assignment=assignment)
+        except AssignmentError:
+            skipped += 1
+            continue
+        _mark_confirmed(assignment, confirmed_by=None)
+        confirmed += 1
+    return confirmed, skipped
+
+
+def expire_past_assignments(*, today: date | None = None) -> int:
+    """종료된 주차의 confirmed 분담안을 expired 로 전환합니다 (매주 월요일 00:00).
+
+    Args:
+        today: 기준 날짜 (테스트용 주입). None 이면 서버 로컬 날짜.
+
+    Returns:
+        전환 건수.
+    """
+    week_start = week_start_of(today or timezone.localdate())
+    return WeeklyAssignment.objects.filter(
+        status=WeeklyAssignment.Status.CONFIRMED, week_start__lt=week_start
+    ).update(status=WeeklyAssignment.Status.EXPIRED, updated_at=timezone.now())
