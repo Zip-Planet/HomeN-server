@@ -52,10 +52,15 @@
 | starter_pack | ForeignKey(StarterPack, nullable) | null이면 커스텀 집안일 |
 | name | CharField(50) | 집안일 이름 |
 | image | ImageField | 이미지 (`chores/` 하위) |
-| repeat_days | ArrayField(IntegerField) | 반복 요일 (0=월 ~ 6=일, Weekday enum) |
+| repeat_days | ArrayField(IntegerField) | 반복 요일 (0=월 ~ 6=일, Weekday enum). **최소 1개 필수** |
 | difficulty | IntegerField(choices) | 1=하, 2=중하, 3=중, 4=중상, 5=상 |
+| point | IntegerField | 난이도에 따라 **자동 부여** (직접 입력 불가, 아래 표 참조) |
+| updated_at | DateTimeField | 최종 수정 일시 (분담안 변경 감지에 사용) |
 
 > **난이도 표시 규칙**: difficulty≤2 → "쉬움", 3≤difficulty≤4 → "중간", difficulty=5 → "어려움"
+
+> **난이도 → 포인트 자동 부여**: 하=40, 중하=80, 중=120, 중상=160, 상=200.
+> 난이도 변경 시 포인트도 자동 재계산된다. 포인트 직접 입력은 허용하지 않는다.
 
 ### HomeChore (집에 배정된 집안일)
 | 필드 | 타입 | 설명 |
@@ -63,9 +68,25 @@
 | id | BigAutoField | PK |
 | home | ForeignKey(Home) | 대상 집 |
 | chore | ForeignKey(Chore) | 배정된 집안일 |
+| is_active | BooleanField(default=True) | **soft-delete 플래그**. 삭제 시 False 로 전환 |
 | created_at | DateTimeField | 배정 일시 |
 
 > `(home, chore)` 유니크 제약.
+
+### 집안일 수정/삭제 정책 (히스토리 보존)
+
+- **수정** (그룹 내 모든 멤버 가능): 집안일명/카테고리/설명/반복요일/난이도만 수정 가능.
+  포인트는 난이도 기반 자동 산출이므로 직접 수정 불가.
+  수정은 **copy-on-write** — 원본 `Chore` 는 보존하고 사본을 만들어 `HomeChore.chore` 를
+  교체한다 (스타터팩·커스텀 동일). 과거 완료 이력·분담안 히스토리는 수정 전 값으로 유지된다.
+  확정된 분담안에는 반영되지 않으며, 확정 전(proposed) 분담안은 재생성 시 반영된다
+  (→ `specs/assignments.md`).
+- **삭제** (그룹 내 모든 멤버 가능): 물리 삭제하지 않고 `HomeChore.is_active=False` 로
+  **비활성화**한다. 완료 이력(`ChoreCompletion`)·메모·분담안 히스토리는 보존된다.
+  비활성화된 집안일은 목록에서 제외되고, 다음 분담안 (재)생성부터 제외된다.
+  이미 확정된 분담안의 해당 주차 항목은 유지된다. 상세 화면 접근 시 삭제된
+  집안일임을 안내한다.
+  단, **분담안 생성 이력도 완료 이력도 없는** 집안일은 물리 삭제한다.
 
 ### Reward
 | 필드 | 타입 | 설명 |
