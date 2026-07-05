@@ -372,16 +372,17 @@ def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
 
 
 def _get_home_chore_in_user_home(*, user: User, home_chore_id: int) -> HomeChore:
-    """유저의 집에 속한 HomeChore 를 찾고, 없으면 HomeChoreNotFoundError 를 발생.
+    """유저의 집에 속한 **활성** HomeChore 를 찾고, 없으면 HomeChoreNotFoundError 를 발생.
 
     notes 화면이 다른 집의 chore 를 노출하지 못하도록 모든 메모 CRUD 는 본 헬퍼를
-    먼저 통과해야 한다.
+    먼저 통과해야 한다. 삭제(비활성화)된 집안일은 조회 전용이므로 모든 쓰기 경로
+    (집안일 수정/삭제, 메모 CRUD)에서 없음으로 취급한다.
     """
     membership = get_user_membership(user)
     if membership is None:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
     try:
-        return HomeChore.objects.get(id=home_chore_id, home=membership.home)
+        return HomeChore.objects.get(id=home_chore_id, home=membership.home, is_active=True)
     except HomeChore.DoesNotExist:
         raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
 
@@ -391,9 +392,11 @@ def update_home_chore(
 ) -> HomeChore:
     """HomeChore 의 chore 메타를 부분 수정합니다 (구성원 누구나).
 
-    스타터팩에서 비롯된 chore 는 **copy-on-write** — 프리셋 Chore 는 보존되고,
-    본인 집 전용 사본(`starter_pack=None`)을 새로 만들어 `HomeChore.chore` 를
-    교체합니다. 커스텀 chore 는 in-place 업데이트합니다.
+    수정은 항상 **copy-on-write** — 원본 Chore 는 보존하고 본인 집 전용 사본
+    (`starter_pack=None`)을 새로 만들어 `HomeChore.chore` 를 교체합니다.
+    과거 데이터(분담안 히스토리 등)가 수정 전 값을 참조할 수 있도록 원본을
+    물리 수정하지 않습니다. 포인트는 난이도 기반 자동 산출이므로 별도 처리가
+    없습니다 (`Chore.point` property).
 
     Args:
         user: 호출 유저.
@@ -405,7 +408,7 @@ def update_home_chore(
         최신 상태의 HomeChore 인스턴스.
 
     Raises:
-        HomeChoreNotFoundError: 본인 집의 chore 가 아닌 경우.
+        HomeChoreNotFoundError: 본인 집의 chore 가 아니거나 삭제(비활성화)된 경우.
     """
     home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
     chore = home_chore.chore
@@ -417,37 +420,40 @@ def update_home_chore(
         return home_chore
 
     with transaction.atomic():
-        if chore.starter_pack_id is not None:
-            new_chore = Chore.objects.create(
-                starter_pack=None,
-                category=updates.get("category", chore.category),
-                name=updates.get("name", chore.name),
-                description=updates.get("description", chore.description),
-                repeat_days=updates.get("repeat_days", chore.repeat_days),
-                difficulty=updates.get("difficulty", chore.difficulty),
-            )
-            home_chore.chore = new_chore
-            home_chore.save(update_fields=["chore"])
-        else:
-            for key, value in updates.items():
-                setattr(chore, key, value)
-            chore.save(update_fields=list(updates.keys()))
+        new_chore = Chore.objects.create(
+            starter_pack=None,
+            category=updates.get("category", chore.category),
+            name=updates.get("name", chore.name),
+            description=updates.get("description", chore.description),
+            repeat_days=updates.get("repeat_days", chore.repeat_days),
+            difficulty=updates.get("difficulty", chore.difficulty),
+        )
+        home_chore.chore = new_chore
+        home_chore.save(update_fields=["chore"])
 
     home_chore.refresh_from_db()
     return home_chore
 
 
 def delete_home_chore(*, user: User, home_chore_id: int) -> None:
-    """HomeChore 링크를 제거합니다 (구성원 누구나, 원본 Chore 는 보존).
+    """집안일을 삭제합니다 (구성원 누구나, 원본 Chore 는 보존).
+
+    완료 이력(`ChoreCompletion`)이 있으면 **비활성화**(soft-delete)해 리포트/
+    기여도/히스토리 데이터를 보존하고, 이력이 전혀 없으면 물리 삭제합니다.
+    비활성화된 집안일은 목록·분담안 (재)생성에서 제외되며, 상세 조회는 가능합니다.
 
     스타터팩 chore 는 다른 집에서도 살아있어야 하므로 원본 Chore 는 절대 삭제하지
-    않습니다. 커스텀 chore 도 동일하게 link 만 제거합니다.
+    않습니다. 커스텀 chore 도 동일하게 원본을 보존합니다.
 
     Raises:
-        HomeChoreNotFoundError: 본인 집의 chore 가 아닌 경우.
+        HomeChoreNotFoundError: 본인 집의 chore 가 아니거나 이미 삭제된 경우.
     """
     home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
-    home_chore.delete()
+    if home_chore.completions.exists():
+        home_chore.is_active = False
+        home_chore.save(update_fields=["is_active"])
+    else:
+        home_chore.delete()
 
 
 def create_home_chore_note(*, user: User, home_chore_id: int, content: str) -> HomeChoreNote:

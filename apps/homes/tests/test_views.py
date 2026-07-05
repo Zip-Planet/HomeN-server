@@ -5,7 +5,7 @@ import pytest
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType
+from apps.homes.models import Chore, ChoreCategory, ChoreCompletion, Home, HomeChore, HomeMember, HomeImageType
 from apps.homes.tests.factories import (
     ChoreCompletionFactory,
     ChoreFactory,
@@ -50,7 +50,7 @@ class TestHomeCreateView:
             "image_id": HomeImageType.TYPE_1,
             "chores": [
                 {"category": ChoreCategory.CLEANING, "name": "청소", "description": "방 청소", "repeat_days": [0, 2], "difficulty": Chore.Difficulty.LOW},
-                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.MEDIUM},
             ],
             "rewards": [{"name": "치킨", "goal_point": 100}],
         }
@@ -109,7 +109,7 @@ class TestHomeCreateView:
             {
                 "name": "우리집",
                 "image_id": HomeImageType.TYPE_1,
-                "chores": [{"category": 9999, "name": "설거지", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}],
+                "chores": [{"category": 9999, "name": "설거지", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}],
                 "rewards": [],
             },
             format="json",
@@ -152,7 +152,7 @@ class TestHomeCreateView:
                 "image_id": HomeImageType.TYPE_1,
                 "starter_pack_id": pack.id,
                 "chores": [
-                    {"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW},
+                    {"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW},
                 ],
                 "rewards": [],
             },
@@ -466,7 +466,7 @@ class TestHomeChoreListView:
         payload = {
             "chores": [
                 {"category": ChoreCategory.TRASH, "name": "쓰레기 버리기", "description": "분리수거", "repeat_days": [0, 3], "difficulty": Chore.Difficulty.LOW},
-                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.MEDIUM},
+                {"category": ChoreCategory.LAUNDRY, "name": "세탁", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.MEDIUM},
             ]
         }
 
@@ -498,7 +498,7 @@ class TestHomeChoreListView:
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.MEMBER)
         client = auth_client(user)
-        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}]}
 
         res = client.post(self.url, payload, format="json")
 
@@ -507,18 +507,33 @@ class TestHomeChoreListView:
     def test_집_없는_유저_404(self):
         user = UserFactory()
         client = auth_client(user)
-        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}]}
 
         res = client.post(self.url, payload, format="json")
 
         assert res.status_code == 404
+
+    def test_repeat_days_빈_배열_400(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        client = auth_client(user)
+        payload = {
+            "chores": [
+                {"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}
+            ]
+        }
+
+        res = client.post(self.url, payload, format="json")
+
+        assert res.status_code == 400
 
     def test_잘못된_카테고리_400(self):
         user = UserFactory()
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
         client = auth_client(user)
-        payload = {"chores": [{"category": 9999, "name": "집안일", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+        payload = {"chores": [{"category": 9999, "name": "집안일", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}]}
 
         res = client.post(self.url, payload, format="json")
 
@@ -529,7 +544,7 @@ class TestHomeChoreListView:
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
         client = auth_client(user)
-        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "a" * 21, "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "a" * 21, "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}]}
 
         res = client.post(self.url, payload, format="json")
 
@@ -540,7 +555,7 @@ class TestHomeChoreListView:
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
         client = auth_client(user)
-        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "집안일", "description": "a" * 21, "repeat_days": [], "difficulty": Chore.Difficulty.LOW}]}
+        payload = {"chores": [{"category": ChoreCategory.TRASH, "name": "집안일", "description": "a" * 21, "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}]}
 
         res = client.post(self.url, payload, format="json")
 
@@ -591,7 +606,7 @@ class TestHomeChoreListView:
         client = auth_client(user)
         payload = {
             "starter_pack_id": pack.id,
-            "chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [], "difficulty": Chore.Difficulty.LOW}],
+            "chores": [{"category": ChoreCategory.TRASH, "name": "쓰레기", "description": "", "repeat_days": [0], "difficulty": Chore.Difficulty.LOW}],
         }
 
         res = client.post(self.url, payload, format="json")
@@ -688,6 +703,19 @@ class TestHomeChoreListViewGet:
         assert row["point"] == 160
         assert row["repeat_days_label"] == ["월", "토"]
 
+    def test_삭제된_집안일은_목록에서_제외(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        active = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None))
+        HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None), is_active=False)
+        client = auth_client(user)
+
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        assert [row["id"] for row in res.data] == [active.pk]
+
     def test_속한_집_없으면_404(self):
         user = UserFactory()
         client = auth_client(user)
@@ -739,6 +767,19 @@ class TestHomeChoreDetailViewGet:
         assert res.data["difficulty_label"] == "중간"
         assert res.data["point"] == 160
         assert res.data["repeat_days_label"] == ["월", "토"]
+
+    def test_삭제된_chore_상세는_조회_가능_is_active_false(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None), is_active=False)
+        client = auth_client(user)
+
+        res = client.get(_chore_detail_url(home_chore.pk))
+
+        # 삭제된 집안일도 상세 접근은 허용 — FE 가 is_active 로 "삭제된 집안일" 안내
+        assert res.status_code == 200
+        assert res.data["is_active"] is False
 
     def test_다른_집_chore_는_404(self):
         user = UserFactory()
@@ -939,7 +980,7 @@ class TestHomeChoreDetailViewWeeklyProgress:
 
 
 class TestHomeChoreDetailViewPatch:
-    def test_커스텀_chore_부분수정_200_in_place(self):
+    def test_커스텀_chore_수정도_copy_on_write_원본_보존(self):
         user = UserFactory()
         home = HomeFactory()
         HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
@@ -957,10 +998,14 @@ class TestHomeChoreDetailViewPatch:
         assert res.status_code == 200
         home_chore.refresh_from_db()
         chore.refresh_from_db()
-        # 커스텀 chore 는 in-place 업데이트 — 동일 PK 유지
-        assert home_chore.chore_id == original_chore_id
-        assert chore.name == "수정됨"
-        assert chore.difficulty == Chore.Difficulty.HIGH
+        # 커스텀 chore 도 copy-on-write — 과거 데이터 보존을 위해 원본은 불변, 새 사본으로 교체
+        assert home_chore.chore_id != original_chore_id
+        assert chore.name == "기존"
+        assert chore.difficulty == Chore.Difficulty.LOW
+        assert home_chore.chore.name == "수정됨"
+        assert home_chore.chore.difficulty == Chore.Difficulty.HIGH
+        # 포인트는 난이도에 따라 자동 재계산되어 응답에 반영
+        assert res.data["point"] == 200
 
     def test_스타터팩_chore_수정시_copy_on_write(self):
         user = UserFactory()
@@ -1021,8 +1066,8 @@ class TestHomeChoreDetailViewPatch:
         )
 
         assert res.status_code == 200
-        chore.refresh_from_db()
-        assert chore.name == "구성원이 수정"
+        home_chore.refresh_from_db()
+        assert home_chore.chore.name == "구성원이 수정"
 
     def test_다른_집_chore_수정_404(self):
         user = UserFactory()
@@ -1119,6 +1164,45 @@ class TestHomeChoreDetailViewDelete:
         assert preset_chore.name == "프리셋"
         # 다른 집의 연결도 그대로
         assert HomeChore.objects.filter(pk=other_home_chore.pk).exists()
+
+    def test_완료이력_있으면_soft_delete_이력_보존(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        chore = ChoreFactory(starter_pack=None)
+        home_chore = HomeChoreFactory(home=home, chore=chore)
+        completion = ChoreCompletionFactory(home_chore=home_chore, completed_by=user, date=date(2026, 6, 29))
+        client = auth_client(user)
+
+        res = client.delete(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 204
+        # 완료 이력이 있으면 물리 삭제 대신 비활성화 — 이력/리포트 데이터 보존
+        home_chore.refresh_from_db()
+        assert home_chore.is_active is False
+        assert ChoreCompletion.objects.filter(pk=completion.pk).exists()
+
+    def test_이미_삭제된_chore_재삭제_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None), is_active=False)
+        client = auth_client(user)
+
+        res = client.delete(_chore_detail_url(home_chore.pk))
+
+        assert res.status_code == 404
+
+    def test_삭제된_chore_수정_404(self):
+        user = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=user, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None), is_active=False)
+        client = auth_client(user)
+
+        res = client.patch(_chore_detail_url(home_chore.pk), {"name": "수정"}, format="json")
+
+        assert res.status_code == 404
 
     def test_관리자_아닌_구성원도_삭제_가능_204(self):
         admin = UserFactory()
