@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "apps.rewards",
     "apps.reports",
     "apps.notifications",
+    "apps.boards",
 ]
 
 MIDDLEWARE = [

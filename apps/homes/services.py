@@ -767,6 +767,8 @@ def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssi
             )
             for home_chore, weekday, user_id in assigned
         ])
+
+    _announce_assignment(assignment, kind="created")
     return assignment
 
 
@@ -906,6 +908,7 @@ def _mark_confirmed(assignment: WeeklyAssignment, *, confirmed_by: User | None) 
     assignment.confirmed_by = confirmed_by
     assignment.save(update_fields=["status", "confirmed_at", "confirmed_by", "updated_at"])
     # TODO(알림): 확정 시 보드 카드 생성 + 전 구성원 앱푸시 (인프라 선정 후 구현 — specs/assignments.md)
+    _announce_assignment(assignment, kind="confirmed")
     return assignment
 
 
