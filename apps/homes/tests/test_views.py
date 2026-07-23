@@ -1458,15 +1458,62 @@ class TestHomeAssignmentView:
         assert res.data["error"]["code"] == "not_enough_chores"
 
     def test_조회_성공_구성원도_가능(self):
+        from apps.homes.services import next_week_start
+
         home, admin = _assignment_home()
         member = UserFactory()
         HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
         auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
 
-        res = auth_client(member).get(_ASSIGNMENT_URL)
+        # POST 는 기본이 다음 주차이므로 조회 시 week_start 를 명시한다.
+        res = auth_client(member).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
 
         assert res.status_code == 200
         assert res.data["status"] == "proposed"
+
+    def test_week_start_생략_시_이번_주차를_조회한다(self):
+        from django.utils import timezone
+
+        from apps.homes.services import week_start_of
+
+        home, admin = _assignment_home()
+        this_week = week_start_of(timezone.localdate())
+        auth_client(admin).post(_ASSIGNMENT_URL, {"week_start": str(this_week)}, format="json")
+
+        res = auth_client(admin).get(_ASSIGNMENT_URL)
+
+        assert res.status_code == 200
+        assert res.data["week_start"] == str(this_week)
+
+    def test_assignee_me_필터는_내_항목만_남긴다(self):
+        home, admin = _assignment_home()
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
+        from apps.homes.services import next_week_start
+
+        res = auth_client(admin).get(
+            _ASSIGNMENT_URL, {"week_start": str(next_week_start()), "assignee": "me"}
+        )
+
+        assert res.status_code == 200
+        assert all(i["assignee"]["uid"] == str(admin.uid) for i in res.data["items"])
+        # 구성원 배정 포인트는 필터와 무관하게 전체를 유지한다.
+        assert len(res.data["member_points"]) == 2
+
+    def test_제안됨_응답에_changes_와_change_type_포함(self):
+        from apps.homes.services import next_week_start
+
+        home, admin = _assignment_home()
+        auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
+        chore = ChoreFactory(starter_pack=None, name="화장실 청소", repeat_days=[5])
+        HomeChoreFactory(home=home, chore=chore)
+
+        res = auth_client(admin).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
+
+        assert res.data["changes"]["has_changes"] is True
+        assert res.data["changes"]["new_entries"][0]["chore_name"] == "화장실 청소"
+        assert all(i["change_type"] is None for i in res.data["items"])
 
     def test_분담안_없으면_404(self):
         _home, admin = _assignment_home()

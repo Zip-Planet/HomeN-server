@@ -131,6 +131,7 @@ def create_home(
     chores: list[dict[str, Any]],
     rewards: list[dict[str, Any]],
     starter_pack_id: int | None = None,
+    starter_pack_chore_ids: list[int] | None = None,
 ) -> Home:
     """집을 생성하고 요청 유저를 관리자로 등록합니다.
 
@@ -146,6 +147,8 @@ def create_home(
         chores: 커스텀 집안일 데이터 목록. 빈 리스트면 생성하지 않습니다.
         rewards: [{"name": ..., "goal_point": ...}, ...] 형식의 리워드 목록. 빈 리스트면 생성하지 않습니다.
         starter_pack_id: 적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들을 일괄 연결.
+        starter_pack_chore_ids: 팩에서 실제 적용할 Chore PK 목록 (미리보기 체크 결과).
+            None 이면 팩 전체, 빈 리스트면 아무것도 연결하지 않습니다.
 
     Returns:
         생성된 Home 인스턴스.
@@ -173,7 +176,11 @@ def create_home(
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)
 
         if starter_pack_id is not None:
-            _apply_starter_pack_to_home(home=home, starter_pack_id=starter_pack_id)
+            _apply_starter_pack_to_home(
+                home=home,
+                starter_pack_id=starter_pack_id,
+                chore_ids=starter_pack_chore_ids,
+            )
         elif chores:
             chore_objs = Chore.objects.bulk_create([
                 Chore(
@@ -195,14 +202,21 @@ def create_home(
     return home
 
 
-def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[HomeChore]:
+def _apply_starter_pack_to_home(
+    *, home: Home, starter_pack_id: int, chore_ids: list[int] | None = None
+) -> list[HomeChore]:
     """스타터팩의 chore 들을 주어진 집에 HomeChore 로 일괄 연결합니다.
 
     이미 같은 (home, chore) 쌍이 있으면 건너뜁니다 (멱등 — 동일 팩 재적용 안전).
 
+    미리보기 화면(G4A/C3A)에서 개별 항목의 체크를 해제할 수 있으므로 선택된
+    chore 만 적용할 수 있다. `chore_ids` 가 None 이면 팩 전체, 빈 리스트면
+    아무것도 적용하지 않는다 ("전체 미선택 후 화면 넘겨도 상관 없음").
+
     Args:
         home: 대상 Home 인스턴스.
         starter_pack_id: 적용할 StarterPack PK.
+        chore_ids: 적용할 Chore PK 목록. None 이면 팩 전체.
 
     Returns:
         새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
@@ -215,6 +229,12 @@ def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[Hom
         raise StarterPackNotFoundError(
             f"스타터팩(id={starter_pack_id}) 또는 해당 집안일을 찾을 수 없습니다."
         )
+
+    if chore_ids is not None:
+        selected = set(chore_ids)
+        pack_chores = [c for c in pack_chores if c.id in selected]
+        if not pack_chores:
+            return []
 
     existing_chore_ids = set(
         HomeChore.objects.filter(home=home, chore__in=pack_chores).values_list("chore_id", flat=True)
@@ -385,14 +405,18 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
     return home_chore_objs
 
 
-def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
+def apply_starter_pack(
+    *, user: User, starter_pack_id: int, chore_ids: list[int] | None = None
+) -> list[HomeChore]:
     """유저의 집에 스타터팩 chore 들을 일괄 등록합니다.
 
     이미 동일 (home, chore) 쌍이 있으면 건너뛰어 멱등성을 보장합니다.
+    미리보기에서 체크 해제한 항목을 제외하려면 `chore_ids` 로 선택분만 넘긴다.
 
     Args:
         user: 요청한 User 인스턴스.
         starter_pack_id: 적용할 StarterPack PK.
+        chore_ids: 적용할 Chore PK 목록. None 이면 팩 전체, 빈 리스트면 적용 없음.
 
     Returns:
         새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
@@ -406,7 +430,40 @@ def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
         raise HomeNotFoundError("속한 집이 없습니다.")
 
     with transaction.atomic():
-        return _apply_starter_pack_to_home(home=membership.home, starter_pack_id=starter_pack_id)
+        return _apply_starter_pack_to_home(
+            home=membership.home, starter_pack_id=starter_pack_id, chore_ids=chore_ids
+        )
+
+
+def restore_home_chore(*, user: User, home_chore_id: int) -> HomeChore:
+    """비활성화(soft-delete)된 집안일을 되살립니다 — 스낵바 "실행 취소".
+
+    삭제 직후 스낵바에서 취소할 수 있어야 하므로, `is_active=False` 로 전환된
+    집안일을 다시 활성화한다. 이력이 전혀 없어 물리 삭제된 집안일은 되살릴 수
+    없다 (404).
+
+    Args:
+        user: 호출 유저 (같은 집 구성원이면 누구나).
+        home_chore_id: 복구할 HomeChore PK.
+
+    Returns:
+        복구된 HomeChore 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아니거나 물리 삭제된 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    home_chore = HomeChore.objects.filter(id=home_chore_id, home=membership.home).first()
+    if home_chore is None:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    if not home_chore.is_active:
+        home_chore.is_active = True
+        home_chore.save(update_fields=["is_active"])
+    return home_chore
 
 
 # ──────────────────────────────────────────

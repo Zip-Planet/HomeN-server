@@ -58,7 +58,6 @@ from apps.homes.serializers import (
 from common.error_responses import ErrorResponseSerializer, error_example
 from common.exceptions import Conflict
 
-
 # 공통 응답 예시 (status_codes=["200"|"201"|"204"|...])
 _AUTH_FAILED_EXAMPLE = error_example(
     code="authentication_failed",
@@ -278,6 +277,7 @@ class HomeCreateView(APIView):
                 chores=data["chores"],
                 rewards=data["rewards"],
                 starter_pack_id=data.get("starter_pack_id"),
+                starter_pack_chore_ids=data.get("starter_pack_chore_ids"),
             )
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
@@ -1093,6 +1093,7 @@ class HomeChoreListView(APIView):
                 home_chores = services.apply_starter_pack(
                     user=request.user,
                     starter_pack_id=starter_pack_id,
+                    chore_ids=data.get("starter_pack_chore_ids"),
                 )
             else:
                 home_chores = services.create_home_chores(
@@ -1918,10 +1919,34 @@ class StarterPackChoreListView(APIView):
 # ── 분담안 (WeeklyAssignment) ─────────────────────────────────────────────────
 
 
-def _serialize_assignment(assignment) -> dict:
-    """분담안을 완료 여부 컨텍스트와 함께 직렬화합니다."""
+def _serialize_assignment(assignment, *, assignee: str | None = None, request_user=None) -> dict:
+    """분담안을 완료 여부 / 변경 감지 컨텍스트와 함께 직렬화합니다.
+
+    변경 감지(`changes`)는 제안됨 상태에서만 의미가 있다 — 확정/만료 분담안은
+    불변 히스토리이므로 원본이 바뀌어도 배지를 노출하지 않는다.
+
+    `assignee` 가 주어지면 항목 목록만 해당 담당자로 좁힌다(`me` 또는 uid).
+    `member_points` 는 화면의 "구성원 배정 포인트" 카드가 항상 전체를 보여주므로
+    필터의 영향을 받지 않는다.
+    """
     completed_keys = selectors.get_completed_item_keys(assignment)
-    return WeeklyAssignmentOutputSerializer(assignment, context={"completed_keys": completed_keys}).data
+    changes = (
+        selectors.get_assignment_changes(assignment)
+        if assignment.status == WeeklyAssignment.Status.PROPOSED
+        else None
+    )
+    data = WeeklyAssignmentOutputSerializer(
+        assignment,
+        context={"completed_keys": completed_keys, "changes": changes},
+    ).data
+
+    if assignee:
+        target_uid = str(request_user.uid) if assignee == "me" and request_user else assignee
+        data["items"] = [
+            item for item in data["items"]
+            if item["assignee"] and item["assignee"]["uid"] == target_uid
+        ]
+    return data
 
 
 # 분담안 응답 필드 표 — 조회/생성/재생성/확정 4개 엔드포인트가 동일 구조를 반환한다.
@@ -1943,7 +1968,7 @@ _ASSIGNMENT_OUTPUT_TABLE = (
     "| body | `items[].assignee` | object | 담당자 `{uid, name, profile_image}` — 탈퇴 시 null |\n"
     "| body | `items[].date` | date | 실행 날짜 (week_start + weekday) |\n"
     "| body | `items[].is_completed` | boolean | 완료 여부 (해당 날짜 ChoreCompletion 존재) |\n"
-    "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, expected_point}` |\n\n"
+    "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, profile_image, expected_point}` |\n\n"
 )
 
 # 💻 예제 코드블록용 응답 JSON (항목 1건으로 축약)
@@ -1965,7 +1990,7 @@ _ASSIGNMENT_EXAMPLE_JSON = (
     "      \"date\": \"2026-07-13\", \"is_completed\": false\n"
     "    }\n"
     "  ],\n"
-    "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"expected_point\": 120}]\n"
+    "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"profile_image\": 2, \"expected_point\": 120}]\n"
     "}\n"
     "```\n"
 )
@@ -2010,8 +2035,8 @@ _ASSIGNMENT_EXAMPLE_VALUE = {
         },
     ],
     "member_points": [
-        {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "expected_point": 160},
-        {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "expected_point": 120},
+        {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "profile_image": 5, "expected_point": 160},
+        {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "profile_image": 2, "expected_point": 120},
     ],
 }
 
@@ -2034,14 +2059,18 @@ class HomeAssignmentView(APIView):
         summary="내 집 분담안 조회 (주차별)",
         description=(
             "## 🔥 설명\n"
-            "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **다음 주차**. "
-            "모든 구성원이 조회 가능하다. 항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **이번 주차** "
+            "(분담안 탭의 기본 진입 탭이 `이번 주`). 모든 구성원이 조회 가능하다. "
+            "항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "제안됨(proposed) 상태에서는 생성 이후 집안일 변경을 `changes` 와 항목별 "
+            "`change_type` 으로 함께 내려준다 (화면의 NEW / UPDATE 배지).\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 다음 주차 |\n\n"
+            "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 이번 주차 |\n"
+            "| query | `assignee` | string |  | 항목 담당자 필터 — `me` 또는 구성원 uid. 생략 시 전체 |\n\n"
             "## 📤 응답 (200)\n"
             + _ASSIGNMENT_OUTPUT_TABLE
             + "## ❌ 에러\n"
@@ -2091,12 +2120,20 @@ class HomeAssignmentView(APIView):
         if home is None:
             raise NotFound("속한 집이 없습니다.")
 
-        week_start = query.validated_data.get("week_start") or services.next_week_start()
+        week_start = query.validated_data.get("week_start") or services.week_start_of(
+            timezone.localdate()
+        )
         assignment = selectors.get_week_assignment(home, week_start)
         if assignment is None:
             raise NotFound("해당 주차의 분담안이 없습니다.")
 
-        return Response(_serialize_assignment(assignment))
+        return Response(
+            _serialize_assignment(
+                assignment,
+                assignee=query.validated_data.get("assignee"),
+                request_user=request.user,
+            )
+        )
 
     @extend_schema(
         tags=["Homes"],

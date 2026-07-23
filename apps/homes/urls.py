@@ -53,6 +53,7 @@ home_urlpatterns = [
         HomeChoreNoteDetailView.as_view(),
     ),
     path("mine/assignments/", HomeAssignmentView.as_view()),
+    path("mine/assignments/history/", HomeAssignmentHistoryView.as_view()),
     path("mine/assignments/<int:assignment_id>/regenerate/", HomeAssignmentRegenerateView.as_view()),
     path("mine/assignments/<int:assignment_id>/confirm/", HomeAssignmentConfirmView.as_view()),
     path("invite/<str:code>/", HomeInviteView.as_view()),

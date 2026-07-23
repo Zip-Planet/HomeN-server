@@ -4,6 +4,7 @@ from django.db.models import QuerySet
 from django.utils import timezone
 
 from apps.homes.models import (
+    AssignmentItem,
     Chore,
     ChoreCompletion,
     Home,
@@ -138,8 +139,14 @@ def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> lis
     상태값:
     - ``completed``: 그 요일에 해당하는 이번 주 날짜에 ChoreCompletion 이 존재.
         ``completed_by`` 가 함께 채워짐 (탈퇴 유저면 None).
-    - ``incomplete``: ``chore.repeat_days`` 에 포함된 요일이지만 이번 주 완료 이력 없음.
-    - ``not_scheduled``: ``chore.repeat_days`` 에 포함되지 않은 요일.
+    - ``incomplete``: 이번 주 분담안에 배정됐거나 ``chore.repeat_days`` 에 포함된
+        요일이지만 완료 이력이 없음.
+    - ``not_scheduled``: 배정도 반복 요일도 아닌 날.
+
+    ``assignee`` 는 이번 주 분담안(`AssignmentItem`)의 담당자다 — 상세 화면이
+    요일별로 "담당자 + 완료/미완료" 를 노출하기 때문이다. 분담안이 없는 주차나
+    배정되지 않은 요일은 None 이며, 이때 상태는 ``repeat_days`` 로 판단한다.
+    담당자와 실제 완료자(``completed_by``)는 다를 수 있다 (도움 카드로 대신 수행).
 
     Args:
         home_chore: 대상 HomeChore (관계 로딩은 호출 측 책임 — chore prefetch 가정).
@@ -147,7 +154,7 @@ def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> lis
 
     Returns:
         7개 dict 의 리스트 (0=월 ~ 6=일). 각 원소는 ``{"weekday", "label",
-        "status", "completed_by"}`` 키를 가진다.
+        "status", "assignee", "completed_by"}`` 키를 가진다.
     """
     today = today or timezone.localdate()
     monday = today - timedelta(days=today.weekday())
@@ -160,6 +167,12 @@ def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> lis
         )
     }
     repeat_days = set(home_chore.chore.repeat_days)
+    assignee_by_weekday = {
+        item.weekday: item.assignee
+        for item in AssignmentItem.objects.select_related("assignee").filter(
+            home_chore=home_chore, assignment__week_start=monday
+        )
+    }
 
     progress: list[dict] = []
     for weekday in range(7):
@@ -168,7 +181,7 @@ def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> lis
         if completion is not None:
             status_value = "completed"
             completed_by = _serialize_completed_by(completion.completed_by)
-        elif weekday in repeat_days:
+        elif weekday in assignee_by_weekday or weekday in repeat_days:
             status_value = "incomplete"
             completed_by = None
         else:
@@ -179,6 +192,7 @@ def get_weekly_progress(home_chore: HomeChore, today: date | None = None) -> lis
             "weekday": weekday,
             "label": Chore.Weekday(weekday).label,
             "status": status_value,
+            "assignee": _serialize_completed_by(assignee_by_weekday.get(weekday)),
             "completed_by": completed_by,
         })
 
