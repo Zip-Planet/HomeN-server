@@ -31,7 +31,6 @@ from apps.homes.models import (
     HomeChoreNote,
     HomeMember,
     HomeImageType,
-    Reward,
     StarterPack,
     WeeklyAssignment,
 )
@@ -170,6 +169,16 @@ class HomeCreateSerializer(serializers.Serializer):
         allow_null=True,
         default=None,
         help_text="적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들이 일괄 연결되며 `chores` 와 동시 사용 불가.",
+    )
+    starter_pack_chore_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text=(
+            "스타터팩에서 실제로 적용할 Chore PK 목록 (미리보기에서 체크된 항목). "
+            "생략/null 이면 팩 전체, 빈 배열이면 아무것도 적용하지 않는다."
+        ),
     )
     chores = ChoreInputSerializer(many=True, default=list, help_text="사용자 정의 집안일 목록 (선택, `starter_pack_id` 와 동시 사용 불가).")
     rewards = RewardInputSerializer(many=True, default=list, help_text="함께 등록할 리워드 목록 (선택).")
@@ -339,19 +348,6 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
 
     def get_repeat_days_label(self, obj: Chore) -> list[str]:
         return _weekday_labels(obj.repeat_days)
-
-
-class RewardOutputSerializer(serializers.ModelSerializer):
-    """리워드 응답."""
-
-    class Meta:
-        model = Reward
-        fields = ["id", "name", "goal_point"]
-        extra_kwargs = {
-            "id": {"help_text": "리워드 PK."},
-            "name": {"help_text": "리워드 이름."},
-            "goal_point": {"help_text": "달성 목표 포인트."},
-        }
 
 
 class ImageIdSerializer(serializers.Serializer):
@@ -537,6 +533,17 @@ class HomeChoreListCreateSerializer(serializers.Serializer):
         default=None,
         help_text="적용할 스타터팩 PK. `chores` 와 동시 사용 불가.",
     )
+    starter_pack_chore_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text=(
+            "스타터팩에서 실제로 적용할 Chore PK 목록 (미리보기에서 체크된 항목). "
+            "생략/null 이면 팩 전체, 빈 배열이면 아무것도 적용하지 않는다. "
+            "`starter_pack_id` 와 함께 사용한다."
+        ),
+    )
     chores = HomeChoreCreateSerializer(
         many=True,
         default=list,
@@ -626,7 +633,9 @@ class HomeChoreDetailOutputSerializer(HomeChoreOutputSerializer):
     - `weekday`: 0(월) ~ 6(일).
     - `label`: 한글 요일 라벨.
     - `status`: `completed` / `incomplete` / `not_scheduled`.
-        - `not_scheduled` 는 `chore.repeat_days` 에 포함되지 않은 요일.
+        - `not_scheduled` 는 배정도 `chore.repeat_days` 도 아닌 요일.
+    - `assignee`: 이번 주 분담안에서 그 요일의 담당자 `{uid, name, profile_image}`.
+        분담안이 없거나 배정되지 않은 요일이면 `null`. 실제 완료자와 다를 수 있다.
     - `completed_by`: `status=completed` 일 때 완료자 정보 `{uid, name, profile_image}`,
         그 외엔 `null`. 완료자 유저가 탈퇴(SET_NULL) 된 경우에도 `null`.
     """
@@ -634,7 +643,7 @@ class HomeChoreDetailOutputSerializer(HomeChoreOutputSerializer):
     weekly_progress = serializers.SerializerMethodField(
         help_text=(
             "이번 주(월~일) 요일별 7개 진행상태. status 값: "
-            "completed/incomplete/not_scheduled."
+            "completed/incomplete/not_scheduled. 각 원소에 담당자(assignee) 포함."
         ),
     )
 
@@ -785,18 +794,43 @@ class HomeInviteDetailSerializer(serializers.ModelSerializer):
 class AssignmentWeekQuerySerializer(serializers.Serializer):
     """분담안 조회 쿼리 파라미터.
 
-    `week_start` 는 조회할 주차의 월요일 날짜. 생략 시 다음 주차를 조회한다.
+    `week_start` 는 조회할 주차의 월요일 날짜. 생략 시 **이번 주차**를 조회한다
+    (분담안 탭의 기본 진입 탭이 `이번 주`).
+
+    `assignee` 는 항목 목록을 담당자로 좁히는 필터 — `me` 또는 구성원 uid.
+    멤버 필터 칩(전체/나/멤버별)에 대응하며, `member_points` 는 항상 전체
+    구성원 기준으로 반환된다.
     """
 
     week_start = serializers.DateField(
         required=False,
-        help_text="조회할 주차의 월요일 날짜 (YYYY-MM-DD). 생략 시 다음 주차.",
+        help_text="조회할 주차의 월요일 날짜 (YYYY-MM-DD). 생략 시 이번 주차.",
+    )
+    assignee = serializers.CharField(
+        required=False,
+        help_text="항목 담당자 필터 — `me` 또는 구성원 uid. 생략 시 전체.",
     )
 
     def validate_week_start(self, value):
         if value.weekday() != 0:
             raise serializers.ValidationError("week_start 는 월요일 날짜여야 합니다.")
         return value
+
+
+class AssignmentHistoryQuerySerializer(serializers.Serializer):
+    """분담안 히스토리 조회 쿼리 파라미터.
+
+    화면(T3C_PlanHistory)은 `1주 전 >` 형태의 주차 셀렉터로 과거 분담안을
+    조회하며, **최대 4주 전까지** 지원한다.
+    """
+
+    weeks_ago = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=4,
+        default=1,
+        help_text="조회할 과거 주차 (1=지난 주 ~ 4=4주 전). 생략 시 1.",
+    )
 
 
 @extend_schema_serializer(
@@ -841,6 +875,12 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
     is_completed = serializers.SerializerMethodField(
         help_text="완료 여부 — 해당 날짜의 ChoreCompletion 존재 여부.",
     )
+    change_type = serializers.SerializerMethodField(
+        help_text=(
+            "생성 시점 이후 원본 변경 표시 — `updated`(수정됨, 화면 UPDATE 배지) / "
+            "`removed`(원본 삭제됨) / null(변경 없음)."
+        ),
+    )
 
     class Meta:
         model = AssignmentItem
@@ -858,6 +898,7 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
             "assignee",
             "date",
             "is_completed",
+            "change_type",
         ]
         extra_kwargs = {
             "id": {"help_text": "분담안 항목 PK."},
@@ -891,13 +932,30 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
         item_date = obj.assignment.week_start + timedelta(days=obj.weekday)
         return (obj.home_chore_id, item_date) in completed_keys
 
+    def get_change_type(self, obj: AssignmentItem) -> str | None:
+        changes = self.context.get("changes")
+        if not changes:
+            return None
+        if obj.id in set(changes.get("removed_item_ids", [])):
+            return "removed"
+        if obj.id in set(changes.get("updated_item_ids", [])):
+            return "updated"
+        return None
+
 
 class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
     """분담안 응답 — 항목 목록과 멤버별 예상 포인트 합계 포함."""
 
     items = AssignmentItemOutputSerializer(many=True, help_text="분담안 항목 목록 (요일순).")
     member_points = serializers.SerializerMethodField(
-        help_text="멤버별 예상 배정 포인트 합계 [{uid, name, expected_point}].",
+        help_text="멤버별 예상 배정 포인트 합계 [{uid, name, profile_image, expected_point}].",
+    )
+    changes = serializers.SerializerMethodField(
+        help_text=(
+            "생성 시점 이후 집안일 변경 요약. `new_entries` 는 분담안에 없는 신규 "
+            "(집안일, 요일) 행 — 화면에서 NEW 배지로 노출한다. `has_changes` 가 true 면 "
+            "확정 시 409(chores_changed) 가 발생하므로 재생성을 유도한다."
+        ),
     )
 
     class Meta:
@@ -910,6 +968,7 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
             "confirmed_at",
             "items",
             "member_points",
+            "changes",
         ]
         extra_kwargs = {
             "id": {"help_text": "분담안 PK."},
@@ -925,6 +984,141 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
             if item.assignee is None:
                 continue
             uid = str(item.assignee.uid)
-            entry = totals.setdefault(uid, {"uid": uid, "name": item.assignee.name, "expected_point": 0})
+            entry = totals.setdefault(
+                uid,
+                {
+                    "uid": uid,
+                    "name": item.assignee.name,
+                    "profile_image": item.assignee.profile_image,
+                    "expected_point": 0,
+                },
+            )
             entry["expected_point"] += item.point
         return sorted(totals.values(), key=lambda e: e["uid"])
+
+    def get_changes(self, obj: WeeklyAssignment) -> dict:
+        return self.context.get(
+            "changes",
+            {"has_changes": False, "new_entries": [], "updated_item_ids": [], "removed_item_ids": []},
+        )
+
+
+# ── 집안일 완료 처리 ─────────────────────────────────────────────────────────
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample("오늘 완료", value={}, request_only=True),
+        OpenApiExample("특정 날짜 완료", value={"date": "2026-07-15"}, request_only=True),
+    ]
+)
+class ChoreCompletionCreateSerializer(serializers.Serializer):
+    """집안일 완료 처리 요청.
+
+    `date` 생략 시 서버 로컬 날짜(오늘) 로 기록한다. 완료는 **확정된 분담안의
+    담당자**만 가능하며, 같은 (집안일, 날짜) 는 1건만 기록된다.
+    """
+
+    date = serializers.DateField(
+        required=False,
+        help_text="완료 기준 날짜 (YYYY-MM-DD). 생략 시 오늘.",
+    )
+
+
+class ChoreCompletionOutputSerializer(serializers.Serializer):
+    """집안일 완료 이력 응답."""
+
+    id = serializers.IntegerField(help_text="완료 이력 PK.")
+    home_chore_id = serializers.IntegerField(help_text="완료된 HomeChore PK.")
+    date = serializers.DateField(help_text="완료 기준 날짜.")
+    point = serializers.IntegerField(help_text="획득 포인트 (분담안 항목 스냅샷 포인트).")
+    completed_by = serializers.DictField(
+        help_text="완료자 {uid, name, profile_image}.",
+    )
+
+
+# ── 홈 대시보드 ──────────────────────────────────────────────────────────────
+
+
+class DashboardMemberSerializer(serializers.Serializer):
+    """대시보드에 노출되는 구성원 표현."""
+
+    uid = serializers.CharField(help_text="유저 uid.")
+    name = serializers.CharField(help_text="닉네임.")
+    profile_image = serializers.IntegerField(allow_null=True, help_text="프로필 이미지 enum.")
+
+
+class DashboardMvpSerializer(DashboardMemberSerializer):
+    """우리집 MVP — 이번 주 완료 포인트가 가장 높은 구성원."""
+
+    point = serializers.IntegerField(help_text="이번 주 완료 포인트 합.")
+    completed_count = serializers.IntegerField(help_text="이번 주 완료 건수.")
+
+
+class DashboardHomeSerializer(serializers.Serializer):
+    """대시보드 상단 집 정보."""
+
+    id = serializers.IntegerField(help_text="집 PK.")
+    name = serializers.CharField(help_text="집 이름.")
+    image = serializers.IntegerField(help_text="집 이미지 enum.")
+    member_count = serializers.IntegerField(help_text="구성원 수.")
+
+
+class DashboardThisWeekSerializer(serializers.Serializer):
+    """이번 주 진행 요약."""
+
+    week_start = serializers.DateField(help_text="이번 주 월요일 날짜.")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="이번 주 분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True, help_text="proposed / confirmed / expired. 분담안이 없으면 null."
+    )
+    total_count = serializers.IntegerField(help_text="이번 주 전체 항목 수.")
+    completed_count = serializers.IntegerField(help_text="완료 항목 수.")
+    progress_rate = serializers.IntegerField(help_text="진행률 % (완료/전체, 반올림).")
+    my_contribution_rate = serializers.IntegerField(
+        help_text="내 기여도 % (내 완료 포인트 / 집 전체 완료 포인트, 반올림).",
+    )
+    mvp = DashboardMvpSerializer(allow_null=True, help_text="우리집 MVP. 완료 이력이 없으면 null.")
+
+
+class DashboardNextWeekSerializer(serializers.Serializer):
+    """다음 주 분담안 상태 라벨용 요약."""
+
+    week_start = serializers.DateField(help_text="다음 주 월요일 날짜.")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="다음 주 분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True,
+        help_text="proposed(제안됨) / confirmed(확정됨). null 이면 화면에 '생성 필요' + 레드닷.",
+    )
+
+
+class HomeDashboardOutputSerializer(serializers.Serializer):
+    """홈 대시보드(T1_HomeDashboard) 응답."""
+
+    home = DashboardHomeSerializer(help_text="집 정보.")
+    this_week = DashboardThisWeekSerializer(help_text="이번 주 진행 요약.")
+    next_week = DashboardNextWeekSerializer(help_text="다음 주 분담안 상태.")
+    items = AssignmentItemOutputSerializer(
+        many=True,
+        help_text="이번 주 분담안 항목 목록 (멤버 필터 탭용). 분담안이 없으면 빈 배열.",
+    )
+
+
+class AssignmentHistoryWeekSerializer(serializers.Serializer):
+    """히스토리 주차 셀렉터 한 칸."""
+
+    week_start = serializers.DateField(help_text="해당 주차의 월요일 날짜.")
+    weeks_ago = serializers.IntegerField(help_text="1(지난 주) ~ 4(4주 전).")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True, help_text="confirmed / expired / proposed. 분담안이 없으면 null."
+    )
+
+
+class AssignmentHistoryOutputSerializer(serializers.Serializer):
+    """분담안 히스토리 응답 — 주차 셀렉터 + 선택된 주차의 분담안."""
+
+    weeks = AssignmentHistoryWeekSerializer(many=True, help_text="조회 가능한 과거 4주차 목록.")
+    selected = WeeklyAssignmentOutputSerializer(
+        allow_null=True, help_text="선택된 주차의 분담안. 기록이 없으면 null."
+    )

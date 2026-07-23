@@ -16,6 +16,9 @@
 - swagger 노출은 `@extend_schema` 로 명시한다 (summary / description / responses).
 """
 
+from datetime import date
+
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -24,9 +27,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.homes import selectors, services
+from apps.homes.models import WeeklyAssignment
 from apps.homes.serializers import (
     AssignmentCreateSerializer,
+    AssignmentHistoryOutputSerializer,
+    AssignmentHistoryQuerySerializer,
+    AssignmentItemOutputSerializer,
     AssignmentWeekQuerySerializer,
+    ChoreCompletionCreateSerializer,
+    ChoreCompletionOutputSerializer,
     ChoreOutputSerializer,
     HomeChoreDetailOutputSerializer,
     HomeChoreListCreateSerializer,
@@ -36,6 +45,7 @@ from apps.homes.serializers import (
     HomeChoreOutputSerializer,
     HomeChoreUpdateSerializer,
     HomeCreateSerializer,
+    HomeDashboardOutputSerializer,
     HomeInviteDetailSerializer,
     HomeJoinSerializer,
     HomeMembershipSerializer,
@@ -47,7 +57,6 @@ from apps.homes.serializers import (
 )
 from common.error_responses import ErrorResponseSerializer, error_example
 from common.exceptions import Conflict
-
 
 # 공통 응답 예시 (status_codes=["200"|"201"|"204"|...])
 _AUTH_FAILED_EXAMPLE = error_example(
@@ -268,6 +277,7 @@ class HomeCreateView(APIView):
                 chores=data["chores"],
                 rewards=data["rewards"],
                 starter_pack_id=data.get("starter_pack_id"),
+                starter_pack_chore_ids=data.get("starter_pack_chore_ids"),
             )
         except services.AlreadyHasHomeError as e:
             raise ValidationError({"already_has_home": str(e)}) from e
@@ -1083,6 +1093,7 @@ class HomeChoreListView(APIView):
                 home_chores = services.apply_starter_pack(
                     user=request.user,
                     starter_pack_id=starter_pack_id,
+                    chore_ids=data.get("starter_pack_chore_ids"),
                 )
             else:
                 home_chores = services.create_home_chores(
@@ -1908,10 +1919,34 @@ class StarterPackChoreListView(APIView):
 # ── 분담안 (WeeklyAssignment) ─────────────────────────────────────────────────
 
 
-def _serialize_assignment(assignment) -> dict:
-    """분담안을 완료 여부 컨텍스트와 함께 직렬화합니다."""
+def _serialize_assignment(assignment, *, assignee: str | None = None, request_user=None) -> dict:
+    """분담안을 완료 여부 / 변경 감지 컨텍스트와 함께 직렬화합니다.
+
+    변경 감지(`changes`)는 제안됨 상태에서만 의미가 있다 — 확정/만료 분담안은
+    불변 히스토리이므로 원본이 바뀌어도 배지를 노출하지 않는다.
+
+    `assignee` 가 주어지면 항목 목록만 해당 담당자로 좁힌다(`me` 또는 uid).
+    `member_points` 는 화면의 "구성원 배정 포인트" 카드가 항상 전체를 보여주므로
+    필터의 영향을 받지 않는다.
+    """
     completed_keys = selectors.get_completed_item_keys(assignment)
-    return WeeklyAssignmentOutputSerializer(assignment, context={"completed_keys": completed_keys}).data
+    changes = (
+        selectors.get_assignment_changes(assignment)
+        if assignment.status == WeeklyAssignment.Status.PROPOSED
+        else None
+    )
+    data = WeeklyAssignmentOutputSerializer(
+        assignment,
+        context={"completed_keys": completed_keys, "changes": changes},
+    ).data
+
+    if assignee:
+        target_uid = str(request_user.uid) if assignee == "me" and request_user else assignee
+        data["items"] = [
+            item for item in data["items"]
+            if item["assignee"] and item["assignee"]["uid"] == target_uid
+        ]
+    return data
 
 
 # 분담안 응답 필드 표 — 조회/생성/재생성/확정 4개 엔드포인트가 동일 구조를 반환한다.
@@ -1933,7 +1968,7 @@ _ASSIGNMENT_OUTPUT_TABLE = (
     "| body | `items[].assignee` | object | 담당자 `{uid, name, profile_image}` — 탈퇴 시 null |\n"
     "| body | `items[].date` | date | 실행 날짜 (week_start + weekday) |\n"
     "| body | `items[].is_completed` | boolean | 완료 여부 (해당 날짜 ChoreCompletion 존재) |\n"
-    "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, expected_point}` |\n\n"
+    "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, profile_image, expected_point}` |\n\n"
 )
 
 # 💻 예제 코드블록용 응답 JSON (항목 1건으로 축약)
@@ -1955,7 +1990,7 @@ _ASSIGNMENT_EXAMPLE_JSON = (
     "      \"date\": \"2026-07-13\", \"is_completed\": false\n"
     "    }\n"
     "  ],\n"
-    "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"expected_point\": 120}]\n"
+    "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"profile_image\": 2, \"expected_point\": 120}]\n"
     "}\n"
     "```\n"
 )
@@ -2000,8 +2035,8 @@ _ASSIGNMENT_EXAMPLE_VALUE = {
         },
     ],
     "member_points": [
-        {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "expected_point": 160},
-        {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "expected_point": 120},
+        {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "profile_image": 5, "expected_point": 160},
+        {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "profile_image": 2, "expected_point": 120},
     ],
 }
 
@@ -2024,14 +2059,18 @@ class HomeAssignmentView(APIView):
         summary="내 집 분담안 조회 (주차별)",
         description=(
             "## 🔥 설명\n"
-            "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **다음 주차**. "
-            "모든 구성원이 조회 가능하다. 항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **이번 주차** "
+            "(분담안 탭의 기본 진입 탭이 `이번 주`). 모든 구성원이 조회 가능하다. "
+            "항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
+            "제안됨(proposed) 상태에서는 생성 이후 집안일 변경을 `changes` 와 항목별 "
+            "`change_type` 으로 함께 내려준다 (화면의 NEW / UPDATE 배지).\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 다음 주차 |\n\n"
+            "| query | `week_start` | date |  | 조회할 주차의 월요일 (YYYY-MM-DD). 생략 시 이번 주차 |\n"
+            "| query | `assignee` | string |  | 항목 담당자 필터 — `me` 또는 구성원 uid. 생략 시 전체 |\n\n"
             "## 📤 응답 (200)\n"
             + _ASSIGNMENT_OUTPUT_TABLE
             + "## ❌ 에러\n"
@@ -2081,12 +2120,20 @@ class HomeAssignmentView(APIView):
         if home is None:
             raise NotFound("속한 집이 없습니다.")
 
-        week_start = query.validated_data.get("week_start") or services.next_week_start()
+        week_start = query.validated_data.get("week_start") or services.week_start_of(
+            timezone.localdate()
+        )
         assignment = selectors.get_week_assignment(home, week_start)
         if assignment is None:
             raise NotFound("해당 주차의 분담안이 없습니다.")
 
-        return Response(_serialize_assignment(assignment))
+        return Response(
+            _serialize_assignment(
+                assignment,
+                assignee=query.validated_data.get("assignee"),
+                request_user=request.user,
+            )
+        )
 
     @extend_schema(
         tags=["Homes"],
@@ -2307,3 +2354,380 @@ class HomeAssignmentConfirmView(APIView):
             raise ValidationError({e.code: str(e)}) from e
 
         return Response(_serialize_assignment(assignment))
+
+
+# ── 집안일 완료 처리 ─────────────────────────────────────────────────────────
+
+
+class HomeChoreCompletionView(APIView):
+    """집안일 완료 처리 (담당자 전용).
+
+    완료 여부는 별도 컬럼 없이 `ChoreCompletion(home_chore, date)` 로 기록되며,
+    분담안 항목의 `is_completed` / 대시보드 진행률 / 기여도 / MVP 가 모두 이
+    테이블을 근거로 계산된다.
+    """
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 완료 처리 (담당자 전용)",
+        description=(
+            "## 🔥 설명\n"
+            "확정된 분담안에서 **본인에게 배정된** 집안일을 완료 처리한다. "
+            "같은 (집안일, 날짜) 조합은 1건만 기록되며 중복 요청은 409 로 차단된다.\n\n"
+            "완료 처리 후 진행률·기여도·MVP·리포트·리워드 포인트에 즉시 반영된다. "
+            "화면 스낵바용으로 획득 포인트(`point`)를 함께 반환한다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. **해당 항목의 담당자만** 호출 가능 (그 외 403).\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 대상 HomeChore PK |\n"
+            "| body | `date` | date | - | 완료 기준 날짜. 생략 시 오늘 |\n\n"
+            "## 📤 응답 (201)\n"
+            "| 위치 | 필드 | 타입 | 설명 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| body | `id` | integer | 완료 이력 PK |\n"
+            "| body | `home_chore_id` | integer | 완료된 집안일 PK |\n"
+            "| body | `date` | date | 완료 기준 날짜 |\n"
+            "| body | `point` | integer | 획득 포인트 (분담안 스냅샷) |\n"
+            "| body | `completed_by` | object | 완료자 `{uid, name, profile_image}` |\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `assignment_not_confirmed` | 해당 주차에 확정된 분담안이 없음 |\n"
+            "| 400 | `not_assigned_on_date` | 그 날짜에 배정되지 않은 집안일 |\n"
+            "| 403 | `not_assignee` | 담당자가 아님 |\n"
+            "| 404 | `not_found` | 본인 집의 활성 집안일이 아님 |\n"
+            "| 409 | `already_completed` | 이미 완료 처리됨 |\n"
+        ),
+        request=ChoreCompletionCreateSerializer,
+        responses={
+            201: ChoreCompletionOutputSerializer,
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="확정 분담안 없음 / 미배정 날짜."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="담당자가 아님."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="집안일 미존재."),
+            409: OpenApiResponse(response=ErrorResponseSerializer, description="이미 완료 처리됨."),
+        },
+        examples=[
+            OpenApiExample("오늘 완료", value={}, request_only=True),
+            OpenApiExample("특정 날짜 완료", value={"date": "2026-07-15"}, request_only=True),
+            OpenApiExample(
+                "완료 성공",
+                value={
+                    "id": 12,
+                    "home_chore_id": 3,
+                    "date": "2026-07-15",
+                    "point": 120,
+                    "completed_by": {
+                        "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                        "name": "김현수",
+                        "profile_image": 2,
+                    },
+                },
+                response_only=True,
+                status_codes=["201"],
+            ),
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="assignment_not_confirmed",
+                message="확정된 분담안이 없어 완료 처리할 수 없습니다.",
+                name="확정 분담안 없음",
+            ),
+            error_example(
+                code="not_assigned_on_date",
+                message="해당 날짜에 배정된 집안일이 아닙니다.",
+                name="미배정 날짜",
+            ),
+            error_example(code="not_assignee", message="담당자만 완료 처리할 수 있습니다.", name="담당자 아님"),
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+            error_example(code="already_completed", message="이미 완료 처리된 집안일입니다.", name="중복 완료"),
+        ],
+    )
+    def post(self, request: Request, home_chore_id: int) -> Response:
+        serializer = ChoreCompletionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            completion = services.complete_chore(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                target_date=serializer.validated_data.get("date"),
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.NotChoreAssigneeError as e:
+            raise PermissionDenied({e.code: str(e)}) from e
+        except services.ChoreAlreadyCompletedError as e:
+            raise Conflict({e.code: str(e)}) from e
+        except services.ChoreCompletionError as e:
+            raise ValidationError({e.code: str(e)}) from e
+
+        return Response(
+            _serialize_completion(completion),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class HomeChoreCompletionDetailView(APIView):
+    """집안일 완료 처리 취소 (스낵바 "실행 취소")."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 완료 취소 (완료한 본인 전용)",
+        description=(
+            "## 🔥 설명\n"
+            "완료 처리를 되돌린다. 완료 직후 스낵바의 **실행 취소**에 대응한다. "
+            "완료를 기록한 본인만 취소할 수 있다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. **완료를 기록한 본인만** 호출 가능 (그 외 403).\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 대상 HomeChore PK |\n"
+            "| path | `completion_date` | date | ✓ | 취소할 완료 이력의 날짜 (YYYY-MM-DD) |\n\n"
+            "## 📤 응답 (204)\n"
+            "본문 없음.\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 403 | `not_assignee` | 완료를 기록한 본인이 아님 |\n"
+            "| 404 | `not_found` | 집안일 또는 완료 이력 미존재 |\n"
+        ),
+        responses={
+            204: OpenApiResponse(description="취소 완료 (본문 없음)."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            403: OpenApiResponse(response=ErrorResponseSerializer, description="완료자 본인이 아님."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="집안일 또는 완료 이력 미존재."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(
+                code="not_assignee",
+                message="완료 처리한 본인만 취소할 수 있습니다.",
+                name="완료자 아님",
+            ),
+            error_example(code="not_found", message="완료 이력을 찾을 수 없습니다.", name="완료 이력 미존재"),
+        ],
+    )
+    def delete(self, request: Request, home_chore_id: int, completion_date: str) -> Response:
+        try:
+            parsed = date.fromisoformat(completion_date)
+        except ValueError as e:
+            raise ValidationError({"invalid": "날짜 형식이 올바르지 않습니다 (YYYY-MM-DD)."}) from e
+
+        try:
+            services.uncomplete_chore(
+                user=request.user,
+                home_chore_id=home_chore_id,
+                target_date=parsed,
+            )
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.ChoreCompletionNotFoundError as e:
+            raise NotFound(str(e)) from e
+        except services.NotChoreAssigneeError as e:
+            raise PermissionDenied({e.code: str(e)}) from e
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _serialize_completion(completion) -> dict:
+    """완료 이력을 응답 dict 로 변환합니다 (획득 포인트 포함)."""
+    return {
+        "id": completion.id,
+        "home_chore_id": completion.home_chore_id,
+        "date": completion.date,
+        "point": getattr(completion, "earned_point", 0),
+        "completed_by": {
+            "uid": str(completion.completed_by.uid),
+            "name": completion.completed_by.name,
+            "profile_image": completion.completed_by.profile_image,
+        },
+    }
+
+
+# ── 홈 대시보드 ──────────────────────────────────────────────────────────────
+
+
+class HomeDashboardView(APIView):
+    """홈 대시보드(T1_HomeDashboard) 집계 조회."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="홈 대시보드 집계 조회",
+        description=(
+            "## 🔥 설명\n"
+            "홈 탭 상단을 한 번에 그리기 위한 집계 응답. 이번 주 진행률, 내 기여도, 우리집 MVP, "
+            "다음 주 분담안 상태 라벨, 이번 주 항목 목록(멤버 필터 탭용)을 함께 반환한다.\n\n"
+            "- **진행률** = 완료 항목 수 / 전체 항목 수\n"
+            "- **기여도** = 내가 완료한 포인트 / 집 전체 완료 포인트 (배정 담당자가 아니라 **실제 완료자** 기준)\n"
+            "- **MVP** = 완료 포인트 최고 구성원 (동점이면 완료 건수 우선)\n"
+            "- `next_week.status` 가 null 이면 화면은 '생성 필요' + 레드닷으로 표시한다\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📤 응답 (200)\n"
+            "| 위치 | 필드 | 타입 | 설명 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| body | `home` | object | `{id, name, image, member_count}` |\n"
+            "| body | `this_week.week_start` | date | 이번 주 월요일 |\n"
+            "| body | `this_week.status` | string | 분담안 상태. 없으면 null |\n"
+            "| body | `this_week.completed_count` / `total_count` | integer | 완료 / 전체 항목 수 |\n"
+            "| body | `this_week.progress_rate` | integer | 진행률 % |\n"
+            "| body | `this_week.my_contribution_rate` | integer | 내 기여도 % |\n"
+            "| body | `this_week.mvp` | object | `{uid, name, profile_image, point, completed_count}` 또는 null |\n"
+            "| body | `next_week.status` | string | `proposed` / `confirmed` / null(생성 필요) |\n"
+            "| body | `items[]` | array | 이번 주 분담안 항목 (분담안 없으면 빈 배열) |\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 404 | `not_found` | 속한 집이 없음 |\n"
+        ),
+        responses={
+            200: HomeDashboardOutputSerializer,
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집이 없음."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
+        ],
+    )
+    def get(self, request: Request) -> Response:
+        dashboard = selectors.get_home_dashboard(user=request.user)
+        if dashboard is None:
+            raise NotFound("속한 집이 없습니다.")
+
+        assignment = dashboard.pop("assignment")
+        if assignment is None:
+            dashboard["items"] = []
+        else:
+            completed_keys = selectors.get_completed_item_keys(assignment)
+            dashboard["items"] = AssignmentItemOutputSerializer(
+                assignment.items.all(),
+                many=True,
+                context={"completed_keys": completed_keys},
+            ).data
+
+        return Response(dashboard)
+
+
+# ── 분담안 히스토리 ──────────────────────────────────────────────────────────
+
+
+class HomeAssignmentHistoryView(APIView):
+    """과거 주차 분담안 히스토리 조회 (모든 구성원)."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="분담안 히스토리 조회 (최대 4주 전)",
+        description=(
+            "## 🔥 설명\n"
+            "분담안 탭의 `히스토리` 화면(T3C_PlanHistory) 용. 주차 셀렉터 목록(`weeks`)과 "
+            "선택된 주차의 분담안(`selected`)을 한 번에 반환한다. **최대 4주 전까지** 조회할 수 있고, "
+            "기본 선택은 지난 주(`weeks_ago=1`)다.\n\n"
+            "분담안이 없는 주차는 `assignment_id` 와 `selected` 가 null 이며, 화면은 "
+            "\"해당 주차의 분담안 기록이 없어요\" 를 노출한다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. 모든 구성원 조회 가능.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| query | `weeks_ago` | integer |  | 1(지난 주) ~ 4(4주 전). 생략 시 1 |\n\n"
+            "## 📤 응답 (200)\n"
+            "| 위치 | 필드 | 타입 | 설명 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| body | `weeks[].week_start` | date | 해당 주차의 월요일 |\n"
+            "| body | `weeks[].weeks_ago` | integer | 1 ~ 4 |\n"
+            "| body | `weeks[].assignment_id` | integer | 분담안 PK. 없으면 null |\n"
+            "| body | `weeks[].status` | string | confirmed / expired / proposed. 없으면 null |\n"
+            "| body | `selected` | object | 선택 주차의 분담안 (조회 응답과 동일 구조). 없으면 null |\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 400 | `invalid` | `weeks_ago` 가 1~4 범위 밖 |\n"
+            "| 404 | `not_found` | 속한 집이 없음 |\n"
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="weeks_ago",
+                type=int,
+                required=False,
+                description="조회할 과거 주차 (1=지난 주 ~ 4=4주 전). 생략 시 1.",
+            ),
+        ],
+        responses={
+            200: AssignmentHistoryOutputSerializer,
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="weeks_ago 범위 오류."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="속한 집이 없음."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="속한 집이 없습니다.", name="집 미존재"),
+        ],
+    )
+    def get(self, request: Request) -> Response:
+        query = AssignmentHistoryQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+
+        home = selectors.get_user_home(request.user)
+        if home is None:
+            raise NotFound("속한 집이 없습니다.")
+
+        history = selectors.get_assignment_history(
+            home=home, weeks_ago=query.validated_data["weeks_ago"]
+        )
+        selected = history["selected"]
+        return Response({
+            "weeks": history["weeks"],
+            "selected": _serialize_assignment(selected) if selected else None,
+        })
+
+
+# ── 집안일 삭제 복구 ─────────────────────────────────────────────────────────
+
+
+class HomeChoreRestoreView(APIView):
+    """비활성화된 집안일 복구 (삭제 스낵바의 "실행 취소")."""
+
+    @extend_schema(
+        tags=["Homes"],
+        summary="집안일 삭제 복구 (실행 취소)",
+        description=(
+            "## 🔥 설명\n"
+            "`DELETE /homes/mine/chores/{id}/` 로 비활성화(soft-delete)된 집안일을 다시 활성화한다. "
+            "삭제 직후 노출되는 스낵바의 **실행 취소**에 대응한다. 같은 집 구성원이면 누구나 호출할 수 있다.\n\n"
+            "완료·분담안 이력이 전혀 없어 **물리 삭제**된 집안일은 복구할 수 없다 (404).\n"
+            "이미 활성 상태면 그대로 200 을 반환한다 (멱등).\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| path | `home_chore_id` | integer | ✓ | 복구할 HomeChore PK |\n\n"
+            "## 📤 응답 (200)\n"
+            "복구된 집안일 (집안일 목록 응답과 동일 구조, `is_active=true`).\n\n"
+            "## ❌ 에러\n"
+            "| status | code | 의미 |\n"
+            "| --- | --- | --- |\n"
+            "| 404 | `not_found` | 본인 집의 집안일이 아니거나 물리 삭제됨 |\n"
+        ),
+        request=None,
+        responses={
+            200: HomeChoreOutputSerializer,
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="집안일 미존재."),
+        },
+        examples=[
+            _AUTH_FAILED_EXAMPLE,
+            error_example(code="not_found", message="집안일을 찾을 수 없습니다.", name="집안일 미존재"),
+        ],
+    )
+    def post(self, request: Request, home_chore_id: int) -> Response:
+        try:
+            home_chore = services.restore_home_chore(user=request.user, home_chore_id=home_chore_id)
+        except services.HomeChoreNotFoundError as e:
+            raise NotFound(str(e)) from e
+
+        return Response(HomeChoreOutputSerializer(home_chore).data)

@@ -5,7 +5,7 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, WeeklyAssignment
+from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, WeeklyAssignment
 from apps.homes.services import (
     AdminCannotLeaveError,
     AlreadyHasHomeError,
@@ -33,6 +33,7 @@ from apps.homes.services import (
     week_start_of,
 )
 from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
+from apps.rewards.models import Reward
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db
@@ -680,3 +681,275 @@ class TestAssignmentScheduleBatch:
         assert WeeklyAssignment.objects.filter(
             home=home, week_start=current_week, status=WeeklyAssignment.Status.CONFIRMED, confirmed_by=None
         ).exists()
+
+
+# ── 집안일 완료 처리 ─────────────────────────────────────────────────────────
+
+
+def _confirm_this_week(home, admin, *, today=None):
+    """이번 주차 분담안을 만들고 확정 상태로 만들어 반환합니다."""
+    from apps.homes.services import _mark_confirmed, _generate_assignment_for_home
+
+    today = today or timezone.localdate()
+    assignment = _generate_assignment_for_home(home=home, week_start=week_start_of(today))
+    return _mark_confirmed(assignment, confirmed_by=admin)
+
+
+class TestCompleteChore:
+    def test_담당자가_완료하면_이력이_생기고_포인트가_실린다(self):
+        from apps.homes.services import complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        _add_chore(home, name="분리수거", difficulty=Chore.Difficulty.MEDIUM, repeat_days=[today.weekday()])
+        _add_chore(home, name="설거지", repeat_days=[today.weekday()])
+        _add_chore(home, name="빨래", repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.filter(chore_name="분리수거").first()
+
+        completion = complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        assert completion.date == today
+        assert completion.completed_by == admin
+        assert completion.earned_point == 120
+
+    def test_중복_완료는_차단된다(self):
+        from apps.homes.services import ChoreAlreadyCompletedError, complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.first()
+
+        complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        with pytest.raises(ChoreAlreadyCompletedError):
+            complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+    def test_담당자가_아니면_거부된다(self):
+        from apps.homes.services import NotChoreAssigneeError, complete_chore
+
+        home, admin = _make_home_with_admin()
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.exclude(assignee=other).first()
+
+        with pytest.raises(NotChoreAssigneeError):
+            complete_chore(user=other, home_chore_id=item.home_chore_id)
+
+    def test_확정_분담안이_없으면_완료할_수_없다(self):
+        from apps.homes.services import ChoreCompletionError, complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        home_chore = _add_chore(home, name="분리수거", repeat_days=[today.weekday()])
+
+        with pytest.raises(ChoreCompletionError) as exc:
+            complete_chore(user=admin, home_chore_id=home_chore.id)
+
+        assert exc.value.code == "assignment_not_confirmed"
+
+    def test_배정되지_않은_요일은_완료할_수_없다(self):
+        from apps.homes.services import ChoreCompletionError, complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        other_weekday = (today.weekday() + 1) % 7
+        target = _add_chore(home, name="분리수거", repeat_days=[other_weekday])
+        _add_chore(home, name="설거지", repeat_days=[today.weekday()])
+        _add_chore(home, name="빨래", repeat_days=[today.weekday()])
+        _confirm_this_week(home, admin, today=today)
+
+        with pytest.raises(ChoreCompletionError) as exc:
+            complete_chore(user=admin, home_chore_id=target.id)
+
+        assert exc.value.code == "not_assigned_on_date"
+
+
+class TestUncompleteChore:
+    def test_완료자_본인은_취소할_수_있다(self):
+        from apps.homes.models import ChoreCompletion
+        from apps.homes.services import complete_chore, uncomplete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.first()
+        complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        uncomplete_chore(user=admin, home_chore_id=item.home_chore_id, target_date=today)
+
+        assert not ChoreCompletion.objects.filter(home_chore_id=item.home_chore_id, date=today).exists()
+
+    def test_완료자가_아니면_취소할_수_없다(self):
+        from apps.homes.services import NotChoreAssigneeError, complete_chore, uncomplete_chore
+
+        home, admin = _make_home_with_admin()
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.filter(assignee=admin).first()
+        complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        with pytest.raises(NotChoreAssigneeError):
+            uncomplete_chore(user=other, home_chore_id=item.home_chore_id, target_date=today)
+
+    def test_이력이_없으면_404_에러(self):
+        from apps.homes.services import ChoreCompletionNotFoundError, uncomplete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        home_chore = _add_chore(home, name="분리수거", repeat_days=[today.weekday()])
+
+        with pytest.raises(ChoreCompletionNotFoundError):
+            uncomplete_chore(user=admin, home_chore_id=home_chore.id, target_date=today)
+
+
+class TestHomeDashboard:
+    def test_진행률_기여도_MVP_집계(self):
+        from apps.homes.selectors import get_home_dashboard
+        from apps.homes.services import complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, difficulty=Chore.Difficulty.MEDIUM, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.first()
+        complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        dashboard = get_home_dashboard(user=admin, today=today)
+
+        assert dashboard["this_week"]["total_count"] == 3
+        assert dashboard["this_week"]["completed_count"] == 1
+        assert dashboard["this_week"]["progress_rate"] == 33
+        # 완료 포인트 전부가 admin 것이므로 기여도 100%
+        assert dashboard["this_week"]["my_contribution_rate"] == 100
+        assert dashboard["this_week"]["mvp"]["name"] == admin.name
+        assert dashboard["this_week"]["mvp"]["point"] == 120
+        assert dashboard["next_week"]["status"] is None
+
+    def test_분담안이_없으면_0값_요약(self):
+        from apps.homes.selectors import get_home_dashboard
+
+        home, admin = _make_home_with_admin()
+
+        dashboard = get_home_dashboard(user=admin)
+
+        assert dashboard["this_week"]["total_count"] == 0
+        assert dashboard["this_week"]["progress_rate"] == 0
+        assert dashboard["this_week"]["mvp"] is None
+        assert dashboard["home"]["member_count"] == 1
+
+    def test_집이_없으면_None(self):
+        from apps.homes.selectors import get_home_dashboard
+
+        assert get_home_dashboard(user=UserFactory()) is None
+
+
+class TestWeeklyProgressAssignee:
+    def test_배정된_요일에는_담당자가_실린다(self):
+        from apps.homes.selectors import get_weekly_progress
+        from apps.homes.services import complete_chore
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        item = assignment.items.first()
+        complete_chore(user=admin, home_chore_id=item.home_chore_id)
+
+        progress = get_weekly_progress(item.home_chore, today=today)
+        entry = next(p for p in progress if p["weekday"] == today.weekday())
+
+        assert entry["status"] == "completed"
+        assert entry["assignee"]["uid"] == str(admin.uid)
+        assert entry["completed_by"]["uid"] == str(admin.uid)
+
+    def test_분담안이_없으면_담당자는_null_이고_repeat_days_로_판단(self):
+        from apps.homes.selectors import get_weekly_progress
+
+        home, _admin = _make_home_with_admin()
+        home_chore = _add_chore(home, name="분리수거", repeat_days=[0])
+
+        progress = get_weekly_progress(home_chore, today=week_start_of(timezone.localdate()))
+
+        assert progress[0]["status"] == "incomplete"
+        assert progress[0]["assignee"] is None
+        assert progress[1]["status"] == "not_scheduled"
+
+
+class TestAssignmentChanges:
+    def test_생성_후_추가된_집안일은_new_entries(self):
+        from apps.homes.selectors import get_assignment_changes
+
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        _add_chore(home, name="화장실 청소", repeat_days=[5])
+
+        changes = get_assignment_changes(assignment)
+
+        assert changes["has_changes"] is True
+        assert [e["chore_name"] for e in changes["new_entries"]] == ["화장실 청소"]
+        assert changes["new_entries"][0]["weekday"] == 5
+        assert changes["updated_item_ids"] == []
+
+    def test_수정된_집안일은_updated_item_ids(self):
+        from apps.homes.selectors import get_assignment_changes
+
+        home, admin = _make_home_with_admin()
+        target = _add_chore(home, name="분리수거", difficulty=Chore.Difficulty.MEDIUM, repeat_days=[0])
+        _add_chore(home, name="설거지", repeat_days=[0])
+        _add_chore(home, name="빨래", repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        update_home_chore(user=admin, home_chore_id=target.id, fields={"difficulty": Chore.Difficulty.HIGH})
+
+        changes = get_assignment_changes(assignment)
+
+        assert changes["has_changes"] is True
+        assert len(changes["updated_item_ids"]) == 1
+        item = assignment.items.get(id=changes["updated_item_ids"][0])
+        assert item.chore_name == "분리수거"
+
+    def test_삭제된_집안일은_removed_item_ids(self):
+        from apps.homes.selectors import get_assignment_changes
+
+        home, admin = _make_home_with_admin()
+        target = _add_chore(home, name="분리수거", repeat_days=[0])
+        _add_chore(home, name="설거지", repeat_days=[0])
+        _add_chore(home, name="빨래", repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        target.is_active = False
+        target.save(update_fields=["is_active"])
+
+        changes = get_assignment_changes(assignment)
+
+        assert len(changes["removed_item_ids"]) == 1
+        assert changes["has_changes"] is True
+
+    def test_변경이_없으면_has_changes_false(self):
+        from apps.homes.selectors import get_assignment_changes
+
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+
+        changes = get_assignment_changes(assignment)
+
+        assert changes["has_changes"] is False
+        assert changes["new_entries"] == []

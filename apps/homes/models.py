@@ -371,27 +371,3 @@ class AssignmentItem(models.Model):
 
     def __str__(self) -> str:
         return f"assignment_item:{self.pk}:{self.chore_name}"
-
-
-class Reward(models.Model):
-    """리워드 모델.
-
-    Attributes:
-        home: 소속 집.
-        name: 리워드 이름.
-        goal_point: 목표 포인트.
-        created_at: 생성 일시.
-        updated_at: 최종 수정 일시.
-    """
-
-    home = models.ForeignKey(Home, on_delete=models.CASCADE, related_name="rewards")
-    name = models.CharField(max_length=50)
-    goal_point = models.PositiveIntegerField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "rewards"
-
-    def __str__(self) -> str:
-        return f"reward:{self.pk}:{self.name}"

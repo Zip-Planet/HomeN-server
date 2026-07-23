@@ -16,10 +16,10 @@ from apps.homes.models import (
     HomeChore,
     HomeChoreNote,
     HomeMember,
-    Reward,
     WeeklyAssignment,
 )
 from apps.homes.selectors import get_user_membership
+from apps.rewards.models import Reward
 from apps.users.models import User
 
 
@@ -71,6 +71,35 @@ class NotNoteAuthorError(HomeError):
     """메모 작성자가 아닌 유저가 수정/삭제를 시도할 때 발생합니다."""
 
 
+class ChoreCompletionError(HomeError):
+    """집안일 완료 처리 관련 오류의 공통 부모. `code` 는 API 에러 코드로 노출된다."""
+
+    code = "chore_completion_error"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class NotChoreAssigneeError(ChoreCompletionError):
+    """담당자가 아닌 유저가 완료/취소를 시도할 때 발생합니다 (403)."""
+
+    code = "not_assignee"
+
+
+class ChoreAlreadyCompletedError(ChoreCompletionError):
+    """해당 날짜에 이미 완료 이력이 있을 때 발생합니다 (409)."""
+
+    code = "already_completed"
+
+
+class ChoreCompletionNotFoundError(ChoreCompletionError):
+    """취소할 완료 이력이 없을 때 발생합니다 (404)."""
+
+    code = "not_found"
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -102,6 +131,7 @@ def create_home(
     chores: list[dict[str, Any]],
     rewards: list[dict[str, Any]],
     starter_pack_id: int | None = None,
+    starter_pack_chore_ids: list[int] | None = None,
 ) -> Home:
     """집을 생성하고 요청 유저를 관리자로 등록합니다.
 
@@ -117,6 +147,8 @@ def create_home(
         chores: 커스텀 집안일 데이터 목록. 빈 리스트면 생성하지 않습니다.
         rewards: [{"name": ..., "goal_point": ...}, ...] 형식의 리워드 목록. 빈 리스트면 생성하지 않습니다.
         starter_pack_id: 적용할 스타터팩 PK (선택). 지정 시 해당 팩의 chore 들을 일괄 연결.
+        starter_pack_chore_ids: 팩에서 실제 적용할 Chore PK 목록 (미리보기 체크 결과).
+            None 이면 팩 전체, 빈 리스트면 아무것도 연결하지 않습니다.
 
     Returns:
         생성된 Home 인스턴스.
@@ -144,7 +176,11 @@ def create_home(
         HomeMember.objects.create(home=home, user=user, role=HomeMember.Role.ADMIN)
 
         if starter_pack_id is not None:
-            _apply_starter_pack_to_home(home=home, starter_pack_id=starter_pack_id)
+            _apply_starter_pack_to_home(
+                home=home,
+                starter_pack_id=starter_pack_id,
+                chore_ids=starter_pack_chore_ids,
+            )
         elif chores:
             chore_objs = Chore.objects.bulk_create([
                 Chore(
@@ -166,14 +202,21 @@ def create_home(
     return home
 
 
-def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[HomeChore]:
+def _apply_starter_pack_to_home(
+    *, home: Home, starter_pack_id: int, chore_ids: list[int] | None = None
+) -> list[HomeChore]:
     """스타터팩의 chore 들을 주어진 집에 HomeChore 로 일괄 연결합니다.
 
     이미 같은 (home, chore) 쌍이 있으면 건너뜁니다 (멱등 — 동일 팩 재적용 안전).
 
+    미리보기 화면(G4A/C3A)에서 개별 항목의 체크를 해제할 수 있으므로 선택된
+    chore 만 적용할 수 있다. `chore_ids` 가 None 이면 팩 전체, 빈 리스트면
+    아무것도 적용하지 않는다 ("전체 미선택 후 화면 넘겨도 상관 없음").
+
     Args:
         home: 대상 Home 인스턴스.
         starter_pack_id: 적용할 StarterPack PK.
+        chore_ids: 적용할 Chore PK 목록. None 이면 팩 전체.
 
     Returns:
         새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
@@ -186,6 +229,12 @@ def _apply_starter_pack_to_home(*, home: Home, starter_pack_id: int) -> list[Hom
         raise StarterPackNotFoundError(
             f"스타터팩(id={starter_pack_id}) 또는 해당 집안일을 찾을 수 없습니다."
         )
+
+    if chore_ids is not None:
+        selected = set(chore_ids)
+        pack_chores = [c for c in pack_chores if c.id in selected]
+        if not pack_chores:
+            return []
 
     existing_chore_ids = set(
         HomeChore.objects.filter(home=home, chore__in=pack_chores).values_list("chore_id", flat=True)
@@ -356,14 +405,18 @@ def create_home_chores(*, user: User, chores: list[dict[str, Any]]) -> list[Home
     return home_chore_objs
 
 
-def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
+def apply_starter_pack(
+    *, user: User, starter_pack_id: int, chore_ids: list[int] | None = None
+) -> list[HomeChore]:
     """유저의 집에 스타터팩 chore 들을 일괄 등록합니다.
 
     이미 동일 (home, chore) 쌍이 있으면 건너뛰어 멱등성을 보장합니다.
+    미리보기에서 체크 해제한 항목을 제외하려면 `chore_ids` 로 선택분만 넘긴다.
 
     Args:
         user: 요청한 User 인스턴스.
         starter_pack_id: 적용할 StarterPack PK.
+        chore_ids: 적용할 Chore PK 목록. None 이면 팩 전체, 빈 리스트면 적용 없음.
 
     Returns:
         새로 생성된 HomeChore 인스턴스 목록 (이미 존재해 skip 된 것은 제외).
@@ -377,7 +430,40 @@ def apply_starter_pack(*, user: User, starter_pack_id: int) -> list[HomeChore]:
         raise HomeNotFoundError("속한 집이 없습니다.")
 
     with transaction.atomic():
-        return _apply_starter_pack_to_home(home=membership.home, starter_pack_id=starter_pack_id)
+        return _apply_starter_pack_to_home(
+            home=membership.home, starter_pack_id=starter_pack_id, chore_ids=chore_ids
+        )
+
+
+def restore_home_chore(*, user: User, home_chore_id: int) -> HomeChore:
+    """비활성화(soft-delete)된 집안일을 되살립니다 — 스낵바 "실행 취소".
+
+    삭제 직후 스낵바에서 취소할 수 있어야 하므로, `is_active=False` 로 전환된
+    집안일을 다시 활성화한다. 이력이 전혀 없어 물리 삭제된 집안일은 되살릴 수
+    없다 (404).
+
+    Args:
+        user: 호출 유저 (같은 집 구성원이면 누구나).
+        home_chore_id: 복구할 HomeChore PK.
+
+    Returns:
+        복구된 HomeChore 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 집안일이 아니거나 물리 삭제된 경우.
+    """
+    membership = get_user_membership(user)
+    if membership is None:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    home_chore = HomeChore.objects.filter(id=home_chore_id, home=membership.home).first()
+    if home_chore is None:
+        raise HomeChoreNotFoundError("집안일을 찾을 수 없습니다.")
+
+    if not home_chore.is_active:
+        home_chore.is_active = True
+        home_chore.save(update_fields=["is_active"])
+    return home_chore
 
 
 # ──────────────────────────────────────────
@@ -681,6 +767,8 @@ def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssi
             )
             for home_chore, weekday, user_id in assigned
         ])
+
+    _announce_assignment(assignment, kind="created")
     return assignment
 
 
@@ -820,6 +908,7 @@ def _mark_confirmed(assignment: WeeklyAssignment, *, confirmed_by: User | None) 
     assignment.confirmed_by = confirmed_by
     assignment.save(update_fields=["status", "confirmed_at", "confirmed_by", "updated_at"])
     # TODO(알림): 확정 시 보드 카드 생성 + 전 구성원 앱푸시 (인프라 선정 후 구현 — specs/assignments.md)
+    _announce_assignment(assignment, kind="confirmed")
     return assignment
 
 
@@ -896,3 +985,158 @@ def expire_past_assignments(*, today: date | None = None) -> int:
     return WeeklyAssignment.objects.filter(
         status=WeeklyAssignment.Status.CONFIRMED, week_start__lt=week_start
     ).update(status=WeeklyAssignment.Status.EXPIRED, updated_at=timezone.now())
+
+
+# ──────────────────────────────────────────
+# 집안일 완료 처리 (ChoreCompletion)
+# ──────────────────────────────────────────
+
+
+def _assignment_item_for_date(*, home: Home, home_chore: HomeChore, target_date: date) -> AssignmentItem:
+    """해당 날짜에 배정된 확정 분담안 항목을 찾습니다.
+
+    완료 처리는 "확정된 분담안의 담당자"만 가능하다 (Figma T1_HomeDashboard 의
+    체크박스는 확정 분담안 항목에만 노출된다). 제안(proposed) 상태이거나 해당
+    요일에 배정이 없으면 완료할 수 없다.
+
+    Args:
+        home: 대상 집.
+        home_chore: 대상 집안일.
+        target_date: 완료 기준 날짜.
+
+    Returns:
+        해당 (집안일, 요일) 의 AssignmentItem.
+
+    Raises:
+        ChoreCompletionError: 확정 분담안이 없거나 그 날짜에 배정이 없는 경우.
+    """
+    assignment = WeeklyAssignment.objects.filter(
+        home=home,
+        week_start=week_start_of(target_date),
+        status=WeeklyAssignment.Status.CONFIRMED,
+    ).first()
+    if assignment is None:
+        raise ChoreCompletionError(
+            "확정된 분담안이 없어 완료 처리할 수 없습니다.",
+            code="assignment_not_confirmed",
+        )
+
+    item = AssignmentItem.objects.filter(
+        assignment=assignment, home_chore=home_chore, weekday=target_date.weekday()
+    ).first()
+    if item is None:
+        raise ChoreCompletionError(
+            "해당 날짜에 배정된 집안일이 아닙니다.",
+            code="not_assigned_on_date",
+        )
+    return item
+
+
+def complete_chore(
+    *,
+    user: User,
+    home_chore_id: int,
+    target_date: date | None = None,
+) -> ChoreCompletion:
+    """집안일을 완료 처리합니다 (담당자 전용).
+
+    같은 (집안일, 날짜) 조합은 1건만 기록된다 — 중복 요청은 409 로 차단한다.
+
+    Args:
+        user: 완료를 기록하는 User (해당 항목의 담당자여야 함).
+        home_chore_id: 대상 HomeChore PK.
+        target_date: 완료 기준 날짜. 생략 시 서버 로컬 날짜(오늘).
+
+    Returns:
+        생성된 ChoreCompletion 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 활성 집안일이 아닌 경우.
+        ChoreCompletionError: 확정 분담안이 없거나 그 날짜에 배정이 없는 경우.
+        NotChoreAssigneeError: 담당자가 아닌 경우.
+        ChoreAlreadyCompletedError: 이미 완료 이력이 있는 경우.
+    """
+    target_date = target_date or timezone.localdate()
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+
+    item = _assignment_item_for_date(
+        home=home_chore.home, home_chore=home_chore, target_date=target_date
+    )
+    if item.assignee_id != user.id:
+        raise NotChoreAssigneeError("담당자만 완료 처리할 수 있습니다.")
+
+    completion, created = ChoreCompletion.objects.get_or_create(
+        home_chore=home_chore,
+        date=target_date,
+        defaults={"completed_by": user},
+    )
+    if not created:
+        raise ChoreAlreadyCompletedError("이미 완료 처리된 집안일입니다.")
+
+    # 화면 스낵바("완료! +120pt")가 획득 포인트를 즉시 노출하므로 분담안 항목의
+    # 스냅샷 포인트를 응답용 임시 속성으로 실어 보낸다 (DB 컬럼 아님).
+    completion.earned_point = item.point
+    return completion
+
+
+def uncomplete_chore(*, user: User, home_chore_id: int, target_date: date) -> None:
+    """완료 처리를 취소합니다 (완료한 본인 전용 — 스낵바 "실행 취소").
+
+    Args:
+        user: 취소를 요청한 User.
+        home_chore_id: 대상 HomeChore PK.
+        target_date: 취소할 완료 이력의 날짜.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 활성 집안일이 아닌 경우.
+        ChoreCompletionNotFoundError: 해당 날짜 완료 이력이 없는 경우.
+        NotChoreAssigneeError: 완료를 기록한 본인이 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+
+    completion = ChoreCompletion.objects.filter(home_chore=home_chore, date=target_date).first()
+    if completion is None:
+        raise ChoreCompletionNotFoundError("완료 이력을 찾을 수 없습니다.")
+    if completion.completed_by_id != user.id:
+        raise NotChoreAssigneeError("완료 처리한 본인만 취소할 수 있습니다.")
+
+    completion.delete()
+
+
+def _announce_assignment(assignment: WeeklyAssignment, *, kind: str) -> None:
+    """분담안 생성/확정을 보드 봇 카드와 알림으로 알립니다.
+
+    보드·알림은 부가 기능이므로 실패해도 분담안 자체는 성립해야 한다. 다만 지금은
+    같은 DB 트랜잭션 밖에서 단순 호출만 하며, 인프라(푸시)는 미정이라 알림 레코드
+    적재까지만 수행한다.
+
+    Args:
+        assignment: 대상 분담안.
+        kind: "created" (제안) 또는 "confirmed" (확정).
+    """
+    from apps.boards.models import BotCardKind
+    from apps.boards.services import publish_bot_card
+    from apps.notifications.models import NotificationCategory
+    from apps.notifications.services import notify_home
+
+    total_count = assignment.items.count()
+    if kind == "confirmed":
+        card_kind = BotCardKind.ASSIGNMENT_CONFIRMED
+        title = "분담안이 확정됐어요"
+    else:
+        card_kind = BotCardKind.ASSIGNMENT_CREATED
+        title = "분담안이 생성됐어요"
+
+    publish_bot_card(
+        home=assignment.home,
+        kind=card_kind,
+        week_start=assignment.week_start,
+        payload={"total_count": total_count, "week_start": str(assignment.week_start)},
+    )
+    notify_home(
+        home=assignment.home,
+        category=NotificationCategory.ASSIGNMENT,
+        title=title,
+        body=f"총 {total_count}개 집안일 · {assignment.week_start} 주차",
+        deep_link=f"assignment:{assignment.week_start}",
+    )
