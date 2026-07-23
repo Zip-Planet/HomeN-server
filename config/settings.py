@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     "apps.homes",
     "apps.rewards",
     "apps.reports",
+    "apps.notifications",
 ]
 
 MIDDLEWARE = [
