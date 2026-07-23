@@ -16,10 +16,10 @@ from apps.homes.models import (
     HomeChore,
     HomeChoreNote,
     HomeMember,
-    Reward,
     WeeklyAssignment,
 )
 from apps.homes.selectors import get_user_membership
+from apps.rewards.models import Reward
 from apps.users.models import User
 
 

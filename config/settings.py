@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     # Local
     "apps.users",
     "apps.homes",
+    "apps.rewards",
 ]
 
 MIDDLEWARE = [

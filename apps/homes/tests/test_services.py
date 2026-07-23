@@ -5,7 +5,7 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, Reward, WeeklyAssignment
+from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, WeeklyAssignment
 from apps.homes.services import (
     AdminCannotLeaveError,
     AlreadyHasHomeError,
@@ -33,6 +33,7 @@ from apps.homes.services import (
     week_start_of,
 )
 from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
+from apps.rewards.models import Reward
 from apps.users.tests.factories import UserFactory
 
 pytestmark = pytest.mark.django_db

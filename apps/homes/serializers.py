@@ -31,7 +31,6 @@ from apps.homes.models import (
     HomeChoreNote,
     HomeMember,
     HomeImageType,
-    Reward,
     StarterPack,
     WeeklyAssignment,
 )
@@ -349,19 +348,6 @@ class ChoreOutputSerializer(serializers.ModelSerializer):
 
     def get_repeat_days_label(self, obj: Chore) -> list[str]:
         return _weekday_labels(obj.repeat_days)
-
-
-class RewardOutputSerializer(serializers.ModelSerializer):
-    """리워드 응답."""
-
-    class Meta:
-        model = Reward
-        fields = ["id", "name", "goal_point"]
-        extra_kwargs = {
-            "id": {"help_text": "리워드 PK."},
-            "name": {"help_text": "리워드 이름."},
-            "goal_point": {"help_text": "달성 목표 포인트."},
-        }
 
 
 class ImageIdSerializer(serializers.Serializer):

@@ -8,7 +8,6 @@ from apps.homes.models import (
     HomeChore,
     HomeImageType,
     HomeMember,
-    Reward,
     StarterPack,
 )
 from apps.users.tests.factories import UserFactory
@@ -59,15 +58,6 @@ class HomeChoreFactory(factory.django.DjangoModelFactory):
 
     class Meta:
         model = HomeChore
-
-
-class RewardFactory(factory.django.DjangoModelFactory):
-    home = factory.SubFactory(HomeFactory)
-    name = factory.Sequence(lambda n: f"리워드{n}")
-    goal_point = 100
-
-    class Meta:
-        model = Reward
 
 
 class ChoreCompletionFactory(factory.django.DjangoModelFactory):
