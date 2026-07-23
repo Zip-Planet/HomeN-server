@@ -89,14 +89,7 @@
   단, **분담안 생성 이력도 완료 이력도 없는** 집안일은 물리 삭제한다.
 
 ### Reward
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| id | BigAutoField | PK |
-| home | ForeignKey(Home) | 소속 집 |
-| name | CharField(50) | 리워드 이름 |
-| goal_point | PositiveIntegerField | 목표 포인트 |
-| created_at | DateTimeField | 생성 일시 |
-| updated_at | DateTimeField | 최종 수정 일시 |
+리워드는 `apps.rewards` 로 분리되었다. → `specs/rewards.md`
 
 ---
 
@@ -320,3 +313,102 @@
 | 4 | 금 |
 | 5 | 토 |
 | 6 | 일 |
+
+
+---
+
+## 집안일 완료 처리
+
+완료 여부는 별도 컬럼 없이 `ChoreCompletion(home_chore, date)` 로 기록한다.
+진행률·기여도·MVP·리포트·리워드 포인트가 전부 이 테이블을 근거로 계산된다.
+
+### POST /api/v1/homes/mine/chores/{home_chore_id}/completions/
+집안일 완료 처리 (**담당자 전용**). body: `{"date": "YYYY-MM-DD"}` (선택, 기본 오늘).
+
+**Response 201**
+```json
+{
+  "id": 12,
+  "home_chore_id": 3,
+  "date": "2026-07-15",
+  "point": 120,
+  "completed_by": {"uid": "…", "name": "김현수", "profile_image": 2}
+}
+```
+
+- `point` 는 분담안 항목의 스냅샷 포인트 — 화면 스낵바 `완료! +120pt` 용.
+- 400 `assignment_not_confirmed`: 해당 주차에 확정 분담안이 없음.
+- 400 `not_assigned_on_date`: 그 날짜에 배정되지 않은 집안일.
+- 403 `not_assignee`: 담당자가 아님 · 404: 본인 집의 활성 집안일이 아님.
+- 409 `already_completed`: 같은 (집안일, 날짜) 중복.
+
+### DELETE /api/v1/homes/mine/chores/{home_chore_id}/completions/{date}/
+완료 취소 (**완료를 기록한 본인 전용**) — 스낵바의 `실행 취소`. 204.
+
+- 403 `not_assignee`: 완료자 본인이 아님 · 404: 완료 이력 없음.
+
+---
+
+## 집안일 삭제 복구
+
+### POST /api/v1/homes/mine/chores/{home_chore_id}/restore/
+비활성화(soft-delete)된 집안일을 되살린다 — 삭제 스낵바의 `실행 취소`.
+같은 집 구성원이면 누구나 가능하며, 이미 활성이면 그대로 200 (멱등).
+이력이 전혀 없어 **물리 삭제**된 집안일은 복구할 수 없다 (404).
+
+---
+
+## 스타터팩 부분 적용
+
+`POST /api/v1/homes/` 와 `POST /api/v1/homes/mine/chores/` 는 `starter_pack_id` 와 함께
+`starter_pack_chore_ids` 를 받을 수 있다 (미리보기 화면에서 체크된 항목).
+
+- 생략/null → 팩 전체 적용.
+- 빈 배열 → 아무것도 적용하지 않음 ("전체 미선택 후 화면 넘겨도 상관 없음").
+
+---
+
+## 집안일 상세의 이번 주 진행 상태
+
+`GET /api/v1/homes/mine/chores/{id}/` 의 `weekly_progress` 각 원소에 **담당자**가 포함된다.
+
+| 키 | 설명 |
+|----|------|
+| `weekday` / `label` | 0(월)~6(일) / 한글 라벨 |
+| `status` | `completed` / `incomplete` / `not_scheduled` |
+| `assignee` | 이번 주 분담안에서 그 요일의 담당자. 배정이 없으면 null |
+| `completed_by` | 실제 완료자. 미완료면 null |
+
+> 담당자와 완료자는 다를 수 있다 (도움 카드로 대신 수행). 분담안이 없는 주차는
+> `assignee` 가 null 이고 상태는 `repeat_days` 로 판단한다.
+
+---
+
+## 홈 대시보드
+
+### GET /api/v1/homes/mine/dashboard/
+`T1_HomeDashboard` 를 한 번에 그리기 위한 집계 응답.
+
+```json
+{
+  "home": {"id": 1, "name": "골든빌401", "image": 1, "member_count": 3},
+  "this_week": {
+    "week_start": "2026-01-26",
+    "assignment_id": 7,
+    "status": "confirmed",
+    "total_count": 25,
+    "completed_count": 16,
+    "progress_rate": 64,
+    "my_contribution_rate": 72,
+    "mvp": {"uid": "…", "name": "투다리김치우동", "profile_image": 1, "point": 560, "completed_count": 7}
+  },
+  "next_week": {"week_start": "2026-02-02", "assignment_id": 8, "status": "proposed"},
+  "items": [ "…분담안 항목 구조…" ]
+}
+```
+
+- **진행률** = 완료 항목 수 / 전체 항목 수.
+- **기여도** = 내가 완료한 포인트 / 집 전체 완료 포인트 (배정 담당자가 아니라 **실제 완료자** 기준).
+- **MVP** = 완료 포인트 최고 구성원 (동점이면 완료 건수 우선).
+- `next_week.status` 가 null 이면 화면은 `생성 필요` + 레드닷으로 표시한다.
+- 404: 속한 집 없음.

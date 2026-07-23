@@ -147,8 +147,12 @@
 
 모두 인증 필요. `{week_start}` 는 `YYYY-MM-DD`(월요일) 형식.
 
-### GET /api/v1/homes/mine/assignments/?week_start=
-자기 집 분담안 조회 (모든 구성원). `week_start` 생략 시 **다음 주차**.
+### GET /api/v1/homes/mine/assignments/?week_start=&assignee=
+자기 집 분담안 조회 (모든 구성원). `week_start` 생략 시 **이번 주차**
+(분담안 탭의 기본 진입 탭이 `이번 주`).
+
+`assignee` 는 항목 목록을 담당자로 좁히는 필터 — `me` 또는 구성원 uid (멤버 필터 칩).
+`member_points`(구성원 배정 포인트 카드)는 항상 전체 기준으로 반환된다.
 
 **Response 200**
 ```json
@@ -173,11 +177,56 @@
     }
   ],
   "member_points": [
-    {"uid": "…", "name": "김현수", "expected_point": 360}
+    {"uid": "…", "name": "김현수", "profile_image": 2, "expected_point": 360}
   ]
 }
 ```
+`items[].change_type` / `changes` — 생성 시점 이후 원본 변경 표시 (제안됨 상태에서만 계산):
+
+```json
+{
+  "items": [{"id": 10, "change_type": "updated"}],
+  "changes": {
+    "has_changes": true,
+    "new_entries": [
+      {"home_chore_id": 9, "chore_name": "화장실 청소", "category": 2, "difficulty": 4, "point": 160, "weekday": 5}
+    ],
+    "updated_item_ids": [10],
+    "removed_item_ids": []
+  }
+}
+```
+
+- `change_type`: `updated`(화면 **UPDATE** 배지) / `removed`(원본 삭제) / null.
+- `new_entries`: 생성 이후 추가돼 분담안에 없는 (집안일, 요일) 행 — 화면 **NEW** 배지.
+  항목은 생성 시점 스냅샷이라 신규 집안일은 항목 자체가 없기 때문에 별도로 내려준다.
+- `has_changes` 가 true 면 확정 시 409(`chores_changed`)가 발생하므로 재생성을 유도한다
+  (확정 모달 2종: `이대로 확정할까요?` / `추가된 집안일이 있어요 → 분담안 다시 생성하기`).
+
 **Error 404** — 해당 주차 분담안 없음.
+
+### GET /api/v1/homes/mine/assignments/history/?weeks_ago=
+분담안 히스토리 조회 (모든 구성원). **최대 4주 전까지**, 기본 선택은 지난 주(`weeks_ago=1`).
+주차 셀렉터 목록과 선택된 주차의 분담안을 한 번에 반환한다.
+
+```json
+{
+  "weeks": [
+    {"week_start": "2026-01-26", "weeks_ago": 1, "assignment_id": 7, "status": "expired"},
+    {"week_start": "2026-01-19", "weeks_ago": 2, "assignment_id": null, "status": null}
+  ],
+  "selected": { "…GET 응답과 동일 구조…" }
+}
+```
+
+- 400: `weeks_ago` 가 1~4 범위 밖 · 404: 속한 집 없음.
+- 기록이 없는 주차는 `assignment_id`/`selected` 가 null (화면: "해당 주차의 분담안 기록이 없어요").
+
+### POST /api/v1/homes/mine/assignments/nudge/
+분담안 생성 재촉 (**구성원 → 관리자**). body: `{"week_start": "…"}` (선택, 기본 이번 주차).
+관리자에게 `이번 주 분담안을 기다리고 있어요` 알림이 적재된다. → `specs/notifications.md`
+
+- 201: `{"notified_count": 1}` · 404: 속한 집 없음.
 
 ### POST /api/v1/homes/mine/assignments/
 분담안 수동 생성 (**관리자 전용**). body: `{"week_start": "…"}` (선택, 기본 다음 주차. 과거 주차 불가).
@@ -205,12 +254,16 @@
 
 ---
 
-## 알림 (구현 보류 — TODO)
+## 보드 카드 / 알림 연동
 
-푸시/보드 인프라 선정 전까지 아래 지점을 서비스 코드에 TODO 로 표시만 한다.
+분담안 생성·확정 시 보드에 봇 카드를 발행하고 전 구성원에게 알림을 적재한다.
+자세한 정책은 `specs/boards.md`, `specs/notifications.md` 참조.
 
-| 시점 | 알림 |
-|------|------|
-| 분담안 확정 시 | 보드 카드 생성 + 전 구성원 앱푸시 |
-| 확정 시도 중 변경 감지 시 | 관리자에게 신규/변경 집안일 안내 |
-| proposed 상태에서 집안일 변경 발생 시 | (확정 단계에서 일괄 안내) |
+| 시점 | 봇 카드 | 알림 |
+|------|---------|------|
+| 분담안 생성 | `assignment_created` | 분담안이 생성됐어요 |
+| 분담안 확정 | `assignment_confirmed` | 분담안이 확정됐어요 |
+| 확정 시도 중 변경 감지 | — | 409 + 응답의 `changes` 로 화면이 안내 |
+
+> **앱푸시 발송은 인프라 미정으로 보류.** 인앱 알림 레코드 적재까지만 구현되어 있고
+> 발송 지점은 `apps/notifications/services.py` 에 TODO 로 표시돼 있다.
