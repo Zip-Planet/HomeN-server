@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     "apps.users",
     "apps.homes",
     "apps.rewards",
+    "apps.reports",
 ]
 
 MIDDLEWARE = [
