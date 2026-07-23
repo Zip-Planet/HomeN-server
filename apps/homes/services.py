@@ -71,6 +71,35 @@ class NotNoteAuthorError(HomeError):
     """메모 작성자가 아닌 유저가 수정/삭제를 시도할 때 발생합니다."""
 
 
+class ChoreCompletionError(HomeError):
+    """집안일 완료 처리 관련 오류의 공통 부모. `code` 는 API 에러 코드로 노출된다."""
+
+    code = "chore_completion_error"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class NotChoreAssigneeError(ChoreCompletionError):
+    """담당자가 아닌 유저가 완료/취소를 시도할 때 발생합니다 (403)."""
+
+    code = "not_assignee"
+
+
+class ChoreAlreadyCompletedError(ChoreCompletionError):
+    """해당 날짜에 이미 완료 이력이 있을 때 발생합니다 (409)."""
+
+    code = "already_completed"
+
+
+class ChoreCompletionNotFoundError(ChoreCompletionError):
+    """취소할 완료 이력이 없을 때 발생합니다 (404)."""
+
+    code = "not_found"
+
+
 # ──────────────────────────────────────────
 # 내부 헬퍼
 # ──────────────────────────────────────────
@@ -896,3 +925,158 @@ def expire_past_assignments(*, today: date | None = None) -> int:
     return WeeklyAssignment.objects.filter(
         status=WeeklyAssignment.Status.CONFIRMED, week_start__lt=week_start
     ).update(status=WeeklyAssignment.Status.EXPIRED, updated_at=timezone.now())
+
+
+# ──────────────────────────────────────────
+# 집안일 완료 처리 (ChoreCompletion)
+# ──────────────────────────────────────────
+
+
+def _assignment_item_for_date(*, home: Home, home_chore: HomeChore, target_date: date) -> AssignmentItem:
+    """해당 날짜에 배정된 확정 분담안 항목을 찾습니다.
+
+    완료 처리는 "확정된 분담안의 담당자"만 가능하다 (Figma T1_HomeDashboard 의
+    체크박스는 확정 분담안 항목에만 노출된다). 제안(proposed) 상태이거나 해당
+    요일에 배정이 없으면 완료할 수 없다.
+
+    Args:
+        home: 대상 집.
+        home_chore: 대상 집안일.
+        target_date: 완료 기준 날짜.
+
+    Returns:
+        해당 (집안일, 요일) 의 AssignmentItem.
+
+    Raises:
+        ChoreCompletionError: 확정 분담안이 없거나 그 날짜에 배정이 없는 경우.
+    """
+    assignment = WeeklyAssignment.objects.filter(
+        home=home,
+        week_start=week_start_of(target_date),
+        status=WeeklyAssignment.Status.CONFIRMED,
+    ).first()
+    if assignment is None:
+        raise ChoreCompletionError(
+            "확정된 분담안이 없어 완료 처리할 수 없습니다.",
+            code="assignment_not_confirmed",
+        )
+
+    item = AssignmentItem.objects.filter(
+        assignment=assignment, home_chore=home_chore, weekday=target_date.weekday()
+    ).first()
+    if item is None:
+        raise ChoreCompletionError(
+            "해당 날짜에 배정된 집안일이 아닙니다.",
+            code="not_assigned_on_date",
+        )
+    return item
+
+
+def complete_chore(
+    *,
+    user: User,
+    home_chore_id: int,
+    target_date: date | None = None,
+) -> ChoreCompletion:
+    """집안일을 완료 처리합니다 (담당자 전용).
+
+    같은 (집안일, 날짜) 조합은 1건만 기록된다 — 중복 요청은 409 로 차단한다.
+
+    Args:
+        user: 완료를 기록하는 User (해당 항목의 담당자여야 함).
+        home_chore_id: 대상 HomeChore PK.
+        target_date: 완료 기준 날짜. 생략 시 서버 로컬 날짜(오늘).
+
+    Returns:
+        생성된 ChoreCompletion 인스턴스.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 활성 집안일이 아닌 경우.
+        ChoreCompletionError: 확정 분담안이 없거나 그 날짜에 배정이 없는 경우.
+        NotChoreAssigneeError: 담당자가 아닌 경우.
+        ChoreAlreadyCompletedError: 이미 완료 이력이 있는 경우.
+    """
+    target_date = target_date or timezone.localdate()
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+
+    item = _assignment_item_for_date(
+        home=home_chore.home, home_chore=home_chore, target_date=target_date
+    )
+    if item.assignee_id != user.id:
+        raise NotChoreAssigneeError("담당자만 완료 처리할 수 있습니다.")
+
+    completion, created = ChoreCompletion.objects.get_or_create(
+        home_chore=home_chore,
+        date=target_date,
+        defaults={"completed_by": user},
+    )
+    if not created:
+        raise ChoreAlreadyCompletedError("이미 완료 처리된 집안일입니다.")
+
+    # 화면 스낵바("완료! +120pt")가 획득 포인트를 즉시 노출하므로 분담안 항목의
+    # 스냅샷 포인트를 응답용 임시 속성으로 실어 보낸다 (DB 컬럼 아님).
+    completion.earned_point = item.point
+    return completion
+
+
+def uncomplete_chore(*, user: User, home_chore_id: int, target_date: date) -> None:
+    """완료 처리를 취소합니다 (완료한 본인 전용 — 스낵바 "실행 취소").
+
+    Args:
+        user: 취소를 요청한 User.
+        home_chore_id: 대상 HomeChore PK.
+        target_date: 취소할 완료 이력의 날짜.
+
+    Raises:
+        HomeChoreNotFoundError: 본인 집의 활성 집안일이 아닌 경우.
+        ChoreCompletionNotFoundError: 해당 날짜 완료 이력이 없는 경우.
+        NotChoreAssigneeError: 완료를 기록한 본인이 아닌 경우.
+    """
+    home_chore = _get_home_chore_in_user_home(user=user, home_chore_id=home_chore_id)
+
+    completion = ChoreCompletion.objects.filter(home_chore=home_chore, date=target_date).first()
+    if completion is None:
+        raise ChoreCompletionNotFoundError("완료 이력을 찾을 수 없습니다.")
+    if completion.completed_by_id != user.id:
+        raise NotChoreAssigneeError("완료 처리한 본인만 취소할 수 있습니다.")
+
+    completion.delete()
+
+
+def _announce_assignment(assignment: WeeklyAssignment, *, kind: str) -> None:
+    """분담안 생성/확정을 보드 봇 카드와 알림으로 알립니다.
+
+    보드·알림은 부가 기능이므로 실패해도 분담안 자체는 성립해야 한다. 다만 지금은
+    같은 DB 트랜잭션 밖에서 단순 호출만 하며, 인프라(푸시)는 미정이라 알림 레코드
+    적재까지만 수행한다.
+
+    Args:
+        assignment: 대상 분담안.
+        kind: "created" (제안) 또는 "confirmed" (확정).
+    """
+    from apps.boards.models import BotCardKind
+    from apps.boards.services import publish_bot_card
+    from apps.notifications.models import NotificationCategory
+    from apps.notifications.services import notify_home
+
+    total_count = assignment.items.count()
+    if kind == "confirmed":
+        card_kind = BotCardKind.ASSIGNMENT_CONFIRMED
+        title = "분담안이 확정됐어요"
+    else:
+        card_kind = BotCardKind.ASSIGNMENT_CREATED
+        title = "분담안이 생성됐어요"
+
+    publish_bot_card(
+        home=assignment.home,
+        kind=card_kind,
+        week_start=assignment.week_start,
+        payload={"total_count": total_count, "week_start": str(assignment.week_start)},
+    )
+    notify_home(
+        home=assignment.home,
+        category=NotificationCategory.ASSIGNMENT,
+        title=title,
+        body=f"총 {total_count}개 집안일 · {assignment.week_start} 주차",
+        deep_link=f"assignment:{assignment.week_start}",
+    )

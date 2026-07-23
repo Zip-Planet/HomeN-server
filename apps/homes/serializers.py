@@ -925,6 +925,141 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
             if item.assignee is None:
                 continue
             uid = str(item.assignee.uid)
-            entry = totals.setdefault(uid, {"uid": uid, "name": item.assignee.name, "expected_point": 0})
+            entry = totals.setdefault(
+                uid,
+                {
+                    "uid": uid,
+                    "name": item.assignee.name,
+                    "profile_image": item.assignee.profile_image,
+                    "expected_point": 0,
+                },
+            )
             entry["expected_point"] += item.point
         return sorted(totals.values(), key=lambda e: e["uid"])
+
+    def get_changes(self, obj: WeeklyAssignment) -> dict:
+        return self.context.get(
+            "changes",
+            {"has_changes": False, "new_entries": [], "updated_item_ids": [], "removed_item_ids": []},
+        )
+
+
+# ── 집안일 완료 처리 ─────────────────────────────────────────────────────────
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample("오늘 완료", value={}, request_only=True),
+        OpenApiExample("특정 날짜 완료", value={"date": "2026-07-15"}, request_only=True),
+    ]
+)
+class ChoreCompletionCreateSerializer(serializers.Serializer):
+    """집안일 완료 처리 요청.
+
+    `date` 생략 시 서버 로컬 날짜(오늘) 로 기록한다. 완료는 **확정된 분담안의
+    담당자**만 가능하며, 같은 (집안일, 날짜) 는 1건만 기록된다.
+    """
+
+    date = serializers.DateField(
+        required=False,
+        help_text="완료 기준 날짜 (YYYY-MM-DD). 생략 시 오늘.",
+    )
+
+
+class ChoreCompletionOutputSerializer(serializers.Serializer):
+    """집안일 완료 이력 응답."""
+
+    id = serializers.IntegerField(help_text="완료 이력 PK.")
+    home_chore_id = serializers.IntegerField(help_text="완료된 HomeChore PK.")
+    date = serializers.DateField(help_text="완료 기준 날짜.")
+    point = serializers.IntegerField(help_text="획득 포인트 (분담안 항목 스냅샷 포인트).")
+    completed_by = serializers.DictField(
+        help_text="완료자 {uid, name, profile_image}.",
+    )
+
+
+# ── 홈 대시보드 ──────────────────────────────────────────────────────────────
+
+
+class DashboardMemberSerializer(serializers.Serializer):
+    """대시보드에 노출되는 구성원 표현."""
+
+    uid = serializers.CharField(help_text="유저 uid.")
+    name = serializers.CharField(help_text="닉네임.")
+    profile_image = serializers.IntegerField(allow_null=True, help_text="프로필 이미지 enum.")
+
+
+class DashboardMvpSerializer(DashboardMemberSerializer):
+    """우리집 MVP — 이번 주 완료 포인트가 가장 높은 구성원."""
+
+    point = serializers.IntegerField(help_text="이번 주 완료 포인트 합.")
+    completed_count = serializers.IntegerField(help_text="이번 주 완료 건수.")
+
+
+class DashboardHomeSerializer(serializers.Serializer):
+    """대시보드 상단 집 정보."""
+
+    id = serializers.IntegerField(help_text="집 PK.")
+    name = serializers.CharField(help_text="집 이름.")
+    image = serializers.IntegerField(help_text="집 이미지 enum.")
+    member_count = serializers.IntegerField(help_text="구성원 수.")
+
+
+class DashboardThisWeekSerializer(serializers.Serializer):
+    """이번 주 진행 요약."""
+
+    week_start = serializers.DateField(help_text="이번 주 월요일 날짜.")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="이번 주 분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True, help_text="proposed / confirmed / expired. 분담안이 없으면 null."
+    )
+    total_count = serializers.IntegerField(help_text="이번 주 전체 항목 수.")
+    completed_count = serializers.IntegerField(help_text="완료 항목 수.")
+    progress_rate = serializers.IntegerField(help_text="진행률 % (완료/전체, 반올림).")
+    my_contribution_rate = serializers.IntegerField(
+        help_text="내 기여도 % (내 완료 포인트 / 집 전체 완료 포인트, 반올림).",
+    )
+    mvp = DashboardMvpSerializer(allow_null=True, help_text="우리집 MVP. 완료 이력이 없으면 null.")
+
+
+class DashboardNextWeekSerializer(serializers.Serializer):
+    """다음 주 분담안 상태 라벨용 요약."""
+
+    week_start = serializers.DateField(help_text="다음 주 월요일 날짜.")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="다음 주 분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True,
+        help_text="proposed(제안됨) / confirmed(확정됨). null 이면 화면에 '생성 필요' + 레드닷.",
+    )
+
+
+class HomeDashboardOutputSerializer(serializers.Serializer):
+    """홈 대시보드(T1_HomeDashboard) 응답."""
+
+    home = DashboardHomeSerializer(help_text="집 정보.")
+    this_week = DashboardThisWeekSerializer(help_text="이번 주 진행 요약.")
+    next_week = DashboardNextWeekSerializer(help_text="다음 주 분담안 상태.")
+    items = AssignmentItemOutputSerializer(
+        many=True,
+        help_text="이번 주 분담안 항목 목록 (멤버 필터 탭용). 분담안이 없으면 빈 배열.",
+    )
+
+
+class AssignmentHistoryWeekSerializer(serializers.Serializer):
+    """히스토리 주차 셀렉터 한 칸."""
+
+    week_start = serializers.DateField(help_text="해당 주차의 월요일 날짜.")
+    weeks_ago = serializers.IntegerField(help_text="1(지난 주) ~ 4(4주 전).")
+    assignment_id = serializers.IntegerField(allow_null=True, help_text="분담안 PK. 없으면 null.")
+    status = serializers.CharField(
+        allow_null=True, help_text="confirmed / expired / proposed. 분담안이 없으면 null."
+    )
+
+
+class AssignmentHistoryOutputSerializer(serializers.Serializer):
+    """분담안 히스토리 응답 — 주차 셀렉터 + 선택된 주차의 분담안."""
+
+    weeks = AssignmentHistoryWeekSerializer(many=True, help_text="조회 가능한 과거 4주차 목록.")
+    selected = WeeklyAssignmentOutputSerializer(
+        allow_null=True, help_text="선택된 주차의 분담안. 기록이 없으면 null."
+    )

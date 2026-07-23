@@ -1553,3 +1553,338 @@ class TestHomeAssignmentRegenerateConfirmView:
         res = auth_client(other_admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
 
         assert res.status_code == 404
+
+
+# ── 집안일 완료 처리 / 홈 대시보드 ────────────────────────────────────────────
+
+
+def _home_with_confirmed_assignment(*, chore_names=("분리수거", "설거지", "빨래"), today=None):
+    """관리자 1인 집 + 이번 주 확정 분담안을 만들고 (home, admin, assignment) 반환."""
+    from django.utils import timezone
+
+    from apps.homes.services import _generate_assignment_for_home, _mark_confirmed, week_start_of
+
+    today = today or timezone.localdate()
+    admin = UserFactory()
+    home = HomeFactory()
+    HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+    for name in chore_names:
+        chore = ChoreFactory(
+            starter_pack=None,
+            name=name,
+            difficulty=Chore.Difficulty.MEDIUM,
+            repeat_days=[today.weekday()],
+        )
+        HomeChoreFactory(home=home, chore=chore)
+
+    assignment = _generate_assignment_for_home(home=home, week_start=week_start_of(today))
+    assignment = _mark_confirmed(assignment, confirmed_by=admin)
+    return home, admin, assignment
+
+
+class TestHomeChoreCompletionView:
+    def test_완료_처리_201_과_획득_포인트(self):
+        from django.utils import timezone
+
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+        client = auth_client(admin)
+
+        res = client.post(f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/", {}, format="json")
+
+        assert res.status_code == 201
+        assert res.data["point"] == 120
+        assert res.data["date"] == timezone.localdate()
+        assert res.data["completed_by"]["uid"] == str(admin.uid)
+        assert ChoreCompletion.objects.filter(home_chore_id=item.home_chore_id).exists()
+
+    def test_중복_완료_409(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+        client = auth_client(admin)
+        url = f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/"
+        client.post(url, {}, format="json")
+
+        res = client.post(url, {}, format="json")
+
+        assert res.status_code == 409
+        assert res.data["error"]["code"] == "already_completed"
+
+    def test_담당자가_아니면_403(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other, role=HomeMember.Role.MEMBER)
+        item = assignment.items.filter(assignee=admin).first()
+
+        res = auth_client(other).post(
+            f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/", {}, format="json"
+        )
+
+        assert res.status_code == 403
+        assert res.data["error"]["code"] == "not_assignee"
+
+    def test_확정_분담안_없으면_400(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None, repeat_days=[0]))
+
+        res = auth_client(admin).post(
+            f"/api/v1/homes/mine/chores/{home_chore.id}/completions/", {}, format="json"
+        )
+
+        assert res.status_code == 400
+        assert res.data["error"]["code"] == "assignment_not_confirmed"
+
+    def test_다른_집_집안일이면_404(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+        outsider_chore = HomeChoreFactory(chore=ChoreFactory(starter_pack=None, repeat_days=[0]))
+
+        res = auth_client(admin).post(
+            f"/api/v1/homes/mine/chores/{outsider_chore.id}/completions/", {}, format="json"
+        )
+
+        assert res.status_code == 404
+
+    def test_인증_없으면_401(self):
+        res = APIClient().post("/api/v1/homes/mine/chores/1/completions/", {}, format="json")
+
+        assert res.status_code == 401
+
+
+class TestHomeChoreCompletionDetailView:
+    def test_완료_취소_204(self):
+        from django.utils import timezone
+
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+        client = auth_client(admin)
+        today = timezone.localdate()
+        client.post(f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/", {}, format="json")
+
+        res = client.delete(f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/{today}/")
+
+        assert res.status_code == 204
+        assert not ChoreCompletion.objects.filter(home_chore_id=item.home_chore_id, date=today).exists()
+
+    def test_이력_없으면_404(self):
+        from django.utils import timezone
+
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+
+        res = auth_client(admin).delete(
+            f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/{timezone.localdate()}/"
+        )
+
+        assert res.status_code == 404
+
+    def test_잘못된_날짜_형식_400(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+
+        res = auth_client(admin).delete(
+            f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/not-a-date/"
+        )
+
+        assert res.status_code == 400
+
+
+class TestHomeDashboardView:
+    url = "/api/v1/homes/mine/dashboard/"
+
+    def test_대시보드_집계_200(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+        item = assignment.items.first()
+        client = auth_client(admin)
+        client.post(f"/api/v1/homes/mine/chores/{item.home_chore_id}/completions/", {}, format="json")
+
+        res = client.get(self.url)
+
+        assert res.status_code == 200
+        assert res.data["home"]["member_count"] == 1
+        assert res.data["this_week"]["total_count"] == 3
+        assert res.data["this_week"]["completed_count"] == 1
+        assert res.data["this_week"]["progress_rate"] == 33
+        assert res.data["this_week"]["my_contribution_rate"] == 100
+        assert res.data["this_week"]["mvp"]["point"] == 120
+        assert res.data["next_week"]["status"] is None
+        assert len(res.data["items"]) == 3
+
+    def test_분담안_없으면_빈_요약(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+
+        res = auth_client(admin).get(self.url)
+
+        assert res.status_code == 200
+        assert res.data["this_week"]["total_count"] == 0
+        assert res.data["this_week"]["mvp"] is None
+        assert res.data["items"] == []
+
+    def test_집이_없으면_404(self):
+        res = auth_client(UserFactory()).get(self.url)
+
+        assert res.status_code == 404
+
+    def test_인증_없으면_401(self):
+        assert APIClient().get(self.url).status_code == 401
+
+
+class TestHomeAssignmentHistoryView:
+    url = "/api/v1/homes/mine/assignments/history/"
+
+    def test_지난_4주_셀렉터와_선택_주차_반환(self):
+        from django.utils import timezone
+
+        from apps.homes.services import _generate_assignment_for_home, _mark_confirmed, week_start_of
+
+        home, admin = _assignment_home()
+        last_week = week_start_of(timezone.localdate()) - timedelta(weeks=1)
+        assignment = _generate_assignment_for_home(home=home, week_start=last_week)
+        _mark_confirmed(assignment, confirmed_by=admin)
+
+        res = auth_client(admin).get(self.url)
+
+        assert res.status_code == 200
+        assert len(res.data["weeks"]) == 4
+        assert res.data["weeks"][0]["weeks_ago"] == 1
+        assert res.data["weeks"][0]["assignment_id"] == assignment.id
+        assert res.data["selected"]["week_start"] == str(last_week)
+
+    def test_기록이_없으면_selected_null(self):
+        _home, admin = _assignment_home()
+
+        res = auth_client(admin).get(self.url)
+
+        assert res.status_code == 200
+        assert res.data["selected"] is None
+        assert all(w["assignment_id"] is None for w in res.data["weeks"])
+
+    def test_weeks_ago_범위_밖이면_400(self):
+        _home, admin = _assignment_home()
+
+        assert auth_client(admin).get(self.url, {"weeks_ago": 5}).status_code == 400
+        assert auth_client(admin).get(self.url, {"weeks_ago": 0}).status_code == 400
+
+    def test_집이_없으면_404(self):
+        assert auth_client(UserFactory()).get(self.url).status_code == 404
+
+
+class TestStarterPackPartialApply:
+    def test_체크_해제한_집안일은_적용되지_않는다(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        keep = ChoreFactory(starter_pack=pack, name="설거지", repeat_days=[0])
+        drop = ChoreFactory(starter_pack=pack, name="빨래", repeat_days=[1])
+
+        res = auth_client(admin).post(
+            "/api/v1/homes/mine/chores/",
+            {"starter_pack_id": pack.id, "starter_pack_chore_ids": [keep.id]},
+            format="json",
+        )
+
+        assert res.status_code == 201
+        names = set(HomeChore.objects.filter(home=home).values_list("chore__name", flat=True))
+        assert names == {"설거지"}
+        assert drop.name not in names
+
+    def test_빈_배열이면_아무것도_적용되지_않는다(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        ChoreFactory(starter_pack=pack, name="설거지", repeat_days=[0])
+
+        res = auth_client(admin).post(
+            "/api/v1/homes/mine/chores/",
+            {"starter_pack_id": pack.id, "starter_pack_chore_ids": []},
+            format="json",
+        )
+
+        assert res.status_code == 201
+        assert res.data == []
+        assert not HomeChore.objects.filter(home=home).exists()
+
+    def test_생략하면_팩_전체_적용(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        pack = StarterPackFactory()
+        ChoreFactory(starter_pack=pack, name="설거지", repeat_days=[0])
+        ChoreFactory(starter_pack=pack, name="빨래", repeat_days=[1])
+
+        res = auth_client(admin).post(
+            "/api/v1/homes/mine/chores/", {"starter_pack_id": pack.id}, format="json"
+        )
+
+        assert res.status_code == 201
+        assert HomeChore.objects.filter(home=home).count() == 2
+
+
+class TestHomeChoreRestoreView:
+    def test_비활성화된_집안일_복구_200(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(
+            home=home, chore=ChoreFactory(starter_pack=None, repeat_days=[0]), is_active=False
+        )
+
+        res = auth_client(admin).post(f"/api/v1/homes/mine/chores/{home_chore.id}/restore/")
+
+        assert res.status_code == 200
+        home_chore.refresh_from_db()
+        assert home_chore.is_active is True
+
+    def test_다른_집_집안일은_404(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        outsider = HomeChoreFactory(chore=ChoreFactory(starter_pack=None, repeat_days=[0]), is_active=False)
+
+        res = auth_client(admin).post(f"/api/v1/homes/mine/chores/{outsider.id}/restore/")
+
+        assert res.status_code == 404
+
+    def test_이미_활성이면_그대로_200(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
+        home_chore = HomeChoreFactory(home=home, chore=ChoreFactory(starter_pack=None, repeat_days=[0]))
+
+        res = auth_client(admin).post(f"/api/v1/homes/mine/chores/{home_chore.id}/restore/")
+
+        assert res.status_code == 200
+        assert res.data["is_active"] is True
+
+
+class TestAssignmentMemberPoints:
+    def test_member_points_에_profile_image_포함(self):
+        """구성원 배정 포인트 카드가 아바타를 노출하므로 profile_image 가 필요하다."""
+        from apps.homes.services import next_week_start
+
+        home, admin = _assignment_home()
+        member = UserFactory(profile_image=5)
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
+
+        res = auth_client(admin).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
+
+        assert res.status_code == 200
+        assert res.data["member_points"]
+        for row in res.data["member_points"]:
+            assert set(row) == {"uid", "name", "profile_image", "expected_point"}
+        by_uid = {row["uid"]: row for row in res.data["member_points"]}
+        assert by_uid[str(member.uid)]["profile_image"] == 5
+
+    def test_대시보드_응답에도_동일_구조(self):
+        home, admin, assignment = _home_with_confirmed_assignment()
+
+        res = auth_client(admin).get("/api/v1/homes/mine/dashboard/")
+
+        assert res.status_code == 200
+        assert res.data["this_week"]["mvp"] is None or "profile_image" in res.data["this_week"]["mvp"]
