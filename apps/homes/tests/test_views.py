@@ -160,7 +160,7 @@ class TestHomeCreateView:
         )
 
         assert res.status_code == 400
-        assert "ambiguous_chore_input" in res.data
+        assert res.data["error"]["code"] == "ambiguous_chore_input"
 
     def test_잘못된_starter_pack_id_404(self):
         user = UserFactory()
@@ -612,7 +612,7 @@ class TestHomeChoreListView:
         res = client.post(self.url, payload, format="json")
 
         assert res.status_code == 400
-        assert "ambiguous_chore_input" in res.data
+        assert res.data["error"]["code"] == "ambiguous_chore_input"
 
     def test_둘_다_누락_400(self):
         user = UserFactory()
@@ -623,7 +623,7 @@ class TestHomeChoreListView:
         res = client.post(self.url, {}, format="json")
 
         assert res.status_code == 400
-        assert "missing_chore_input" in res.data
+        assert res.data["error"]["code"] == "missing_chore_input"
 
     def test_잘못된_starter_pack_id_404(self):
         user = UserFactory()
