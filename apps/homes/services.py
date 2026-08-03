@@ -18,7 +18,7 @@ from apps.homes.models import (
     HomeMember,
     WeeklyAssignment,
 )
-from apps.homes.selectors import get_user_membership
+from apps.homes.selectors import get_assignment_changes, get_user_membership
 from apps.rewards.models import Reward
 from apps.users.models import User
 
@@ -667,7 +667,7 @@ def _chore_fingerprint(home: Home) -> str:
 
     활성 HomeChore 들의 (id, 이름, 카테고리, 반복요일, 난이도) 를 id 순으로
     직렬화해 해시한다. 집안일 추가/수정(copy-on-write 로 chore_id 변경)/삭제
-    (비활성화) 모두 지문을 바꾼다.
+    (비활성화) 모두 지문을 바꾼다. 포인트는 난이도에서 파생되므로 별도로 담지 않는다.
     """
     rows = [
         (hc.id, hc.chore.name, hc.chore.category, tuple(sorted(hc.chore.repeat_days)), hc.chore.difficulty)
@@ -700,7 +700,49 @@ def _recent_contribution_points(*, home: Home, week_start: date) -> dict[int, in
     return totals
 
 
-def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssignment:
+def _snapshot_items(assignment: WeeklyAssignment) -> dict[tuple[int | None, int], dict]:
+    """분담안 항목을 `(집안일, 요일) → 스냅샷` 으로 펼칩니다 (재생성 diff 기준).
+
+    담당자는 담지 않는다 — 재생성은 동점 시 무작위 tie-break 이 있어 담당자가
+    거의 매번 바뀌므로, 담당자 변경까지 UPDATE 로 치면 배지가 무의미해진다.
+    """
+    return {
+        (item.home_chore_id, item.weekday): {
+            "chore_name": item.chore_name,
+            "category": item.category,
+            "difficulty": item.difficulty,
+            "point": item.point,
+        }
+        for item in assignment.items.all()
+    }
+
+
+def _resolve_change_type(
+    previous_items: dict[tuple[int | None, int], dict] | None,
+    *,
+    key: tuple[int | None, int],
+    snapshot: dict,
+) -> str | None:
+    """직전 분담안 대비 항목의 변경 타입을 판정합니다 (화면의 NEW / UPDATE 배지).
+
+    최초 생성(`previous_items is None`)은 비교 대상이 없어 항상 None 이다.
+    """
+    if previous_items is None:
+        return None
+    previous = previous_items.get(key)
+    if previous is None:
+        return AssignmentItem.ChangeType.NEW
+    if previous != snapshot:
+        return AssignmentItem.ChangeType.UPDATED
+    return None
+
+
+def _generate_assignment_for_home(
+    *,
+    home: Home,
+    week_start: date,
+    previous_items: dict[tuple[int | None, int], dict] | None = None,
+) -> WeeklyAssignment:
     """분담안 생성 코어 — 권한/주차 중복 검증은 호출 측 책임.
 
     배정 알고리즘 (specs/assignments.md):
@@ -709,6 +751,12 @@ def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssi
        멤버에게 배정한다 (greedy/LPT — 멤버별 총합 최대한 균등).
     3. 누적 동점 시 최근 3주 기여도가 낮은 멤버 우선, 그래도 동점이면 무작위
        (재생성 시 동일 결과 반복 방지).
+
+    Args:
+        home: 대상 집.
+        week_start: 적용 주차의 월요일 날짜.
+        previous_items: 재생성 시 직전 분담안의 `_snapshot_items()` 결과. 주어지면
+            각 항목의 `change_type` 을 NEW / UPDATED 로 굽는다. 최초 생성이면 None.
 
     Raises:
         AssignmentStateError: 활성 집안일이 3개 미만이거나 구성원이 없는 경우.
@@ -754,19 +802,25 @@ def _generate_assignment_for_home(*, home: Home, week_start: date) -> WeeklyAssi
             member_uids_snapshot=_member_uids_snapshot(home),
             chore_fingerprint=_chore_fingerprint(home),
         )
-        AssignmentItem.objects.bulk_create([
-            AssignmentItem(
+        items = []
+        for home_chore, weekday, user_id in assigned:
+            snapshot = {
+                "chore_name": home_chore.chore.name,
+                "category": home_chore.chore.category,
+                "difficulty": home_chore.chore.difficulty,
+                "point": home_chore.chore.point,
+            }
+            items.append(AssignmentItem(
                 assignment=assignment,
                 home_chore=home_chore,
                 weekday=weekday,
                 assignee=user_by_id[user_id],
-                chore_name=home_chore.chore.name,
-                category=home_chore.chore.category,
-                difficulty=home_chore.chore.difficulty,
-                point=home_chore.chore.point,
-            )
-            for home_chore, weekday, user_id in assigned
-        ])
+                change_type=_resolve_change_type(
+                    previous_items, key=(home_chore.id, weekday), snapshot=snapshot
+                ),
+                **snapshot,
+            ))
+        AssignmentItem.objects.bulk_create(items)
 
     _announce_assignment(assignment, kind="created")
     return assignment
@@ -813,6 +867,11 @@ def generate_assignment(*, user: User, week_start: date | None = None) -> Weekly
 def regenerate_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
     """proposed 분담안을 폐기하고 최신 원본 기준으로 재생성합니다 (관리자 전용).
 
+    새 항목에는 직전 분담안 대비 `change_type`(new / updated)을 굽는다 — 화면은
+    이를 NEW / UPDATE 배지로 노출한다. 원본이 삭제된 집안일은 새 분담안에 항목
+    자체가 없으므로 별도 표시하지 않는다. 변경 없이 연속 재생성하면 직전 재생성본과
+    같아 배지는 사라진다 ("이번 재생성으로 무엇이 바뀌었나"가 배지의 의미).
+
     Raises:
         NotHomeAdminError: 관리자가 아닌 경우.
         AssignmentNotFoundError: 본인 집의 분담안이 아닌 경우.
@@ -830,8 +889,11 @@ def regenerate_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment
 
     with transaction.atomic():
         week_start = assignment.week_start
+        previous_items = _snapshot_items(assignment)
         assignment.delete()
-        return _generate_assignment_for_home(home=membership.home, week_start=week_start)
+        return _generate_assignment_for_home(
+            home=membership.home, week_start=week_start, previous_items=previous_items
+        )
 
 
 def confirm_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
@@ -859,6 +921,48 @@ def confirm_assignment(*, user: User, assignment_id: int) -> WeeklyAssignment:
 
     _check_confirm_conditions(home=home, assignment=assignment)
     return _mark_confirmed(assignment, confirmed_by=user)
+
+
+def preview_assignment_confirm(*, user: User, assignment_id: int) -> dict:
+    """확정 전 체크 — 확정하지 않고 재생성이 필요한지만 판단합니다 (관리자 전용).
+
+    화면은 `분담안 확정` 버튼 클릭 시 이 결과로 팝업을 고른다.
+    `needs_regenerate=True` 면 "추가된 집안일이 있어요"(재생성 유도),
+    False 면 "이대로 확정할까요?"(확정 확인). 실제 확정은 확인 팝업에서
+    `acknowledged=true` 로 다시 호출할 때 이뤄진다.
+
+    Raises:
+        NotHomeAdminError: 관리자가 아닌 경우.
+        AssignmentNotFoundError: 본인 집의 분담안이 아닌 경우.
+        AssignmentStateError: proposed 상태가 아니거나 같은 주차 확정본 존재,
+            구성원 없음 (400) — 재생성으로 해결되지 않는 상태 오류라 그대로 전파한다.
+    """
+    membership = _get_admin_membership(user)
+    home = membership.home
+
+    try:
+        assignment = WeeklyAssignment.objects.get(id=assignment_id, home=home)
+    except WeeklyAssignment.DoesNotExist:
+        raise AssignmentNotFoundError("분담안을 찾을 수 없습니다.") from None
+
+    try:
+        _check_confirm_conditions(home=home, assignment=assignment)
+    except AssignmentConflictError as e:
+        blocked_reason = e.code
+    else:
+        blocked_reason = None
+
+    changes = get_assignment_changes(assignment)
+    return {
+        "confirmed": False,
+        "needs_regenerate": changes["has_changes"] or blocked_reason is not None,
+        "has_changes": changes["has_changes"],
+        "added_count": len(changes["new_entries"]),
+        "updated_count": len(changes["updated_item_ids"]),
+        "removed_count": len(changes["removed_item_ids"]),
+        "blocked_reason": blocked_reason,
+        "assignment": None,
+    }
 
 
 def _check_confirm_conditions(*, home: Home, assignment: WeeklyAssignment) -> None:

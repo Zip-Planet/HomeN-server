@@ -4,7 +4,7 @@
 > 도메인: 분담안(`WeeklyAssignment`) — 한 집의 한 주차에 대한 집안일 배정 묶음
 > 관련 코드: `apps/homes/views.py`, `apps/homes/serializers.py`, `apps/homes/selectors.py`, `apps/notifications/views.py`
 > 스펙: `specs/assignments.md`
-> 변경 감지(`changes` / `change_type`) 상세는 별도 문서 참조 → [assignments-changes.md](./assignments-changes.md)
+> 행 배지(`change_type`)와 확정 2단계 플로우 상세는 별도 문서 참조 → [assignments-changes.md](./assignments-changes.md)
 
 ---
 
@@ -40,9 +40,10 @@
 **분담안 생성 시점의 값을 복사해 저장한 스냅샷**이다. 생성 이후 원본 집안일이
 수정·삭제되어도 확정/만료 분담안의 항목 값은 바뀌지 않는다.
 
-`proposed` 상태에서는 스냅샷과 최신 원본의 차이를 서버가 계산해 `changes` 와
-항목별 `change_type` 으로 함께 내려준다(NEW / UPDATE / 삭제 배지).
-자세한 변경 감지 규칙은 [assignments-changes.md](./assignments-changes.md) 참조.
+항목별 `change_type` 은 **재생성 시점**에 직전 분담안과 비교해 서버가 구워둔 값이다
+(화면의 NEW / UPDATE 배지). 최초 생성분은 전부 null 이다.
+확정은 `분담안 확정` 클릭(체크) → 확인 팝업 → 실제 확정의 **2단계**로 동작한다.
+자세한 규칙은 [assignments-changes.md](./assignments-changes.md) 참조.
 
 ---
 
@@ -91,12 +92,12 @@
 | `items[].assignee` | object\|null | 담당자 `{uid, name, profile_image}` — 탈퇴 시 null |
 | `items[].date` | date | 실행 날짜 (`week_start + weekday`) |
 | `items[].is_completed` | boolean | 완료 여부 (해당 날짜 `ChoreCompletion` 존재) |
-| `items[].change_type` | string\|null | `updated` / `removed` / null (제안됨 상태에서만 의미) |
+| `items[].change_type` | string\|null | `new`(NEW 배지) / `updated`(UPDATE 배지) / null |
 | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, profile_image, expected_point}` (항상 전체 기준) |
-| `changes` | object | 생성 이후 변경 요약 (제안됨 상태에서만 값 존재) → [상세](./assignments-changes.md) |
 
-> `change_type` / `changes` 는 `proposed` 상태에서만 계산되며, `confirmed` / `expired`
-> 에서는 각각 `null` / 빈 값으로 내려온다. 상세 규칙은
+> `change_type` 은 **재생성 시점에 직전 분담안과 비교해 DB 에 저장한 값**이다. 조회 때
+> 계산하지 않으므로 몇 번을 조회해도 같고, 확정·만료된 분담안도 생성 당시 값을 그대로 보존한다.
+> 최초 생성분은 비교 대상이 없어 전부 null. 상세 규칙은
 > [assignments-changes.md](./assignments-changes.md) 참조.
 
 **공통 응답 예시 (proposed):**
@@ -120,11 +121,7 @@
   ],
   "member_points": [
     {"uid": "8f3e…", "name": "김현수", "profile_image": 2, "expected_point": 120}
-  ],
-  "changes": {
-    "has_changes": false, "new_entries": [],
-    "updated_item_ids": [], "removed_item_ids": []
-  }
+  ]
 }
 ```
 
@@ -257,10 +254,23 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/7/regenerate/' \
 | 위치 | 필드 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- | --- |
 | path | `assignment_id` | integer | ✓ | 확정할 분담안 PK (proposed 상태) |
+| body | `acknowledged` | boolean | - | 생략/false = 확정 전 체크, true = 실제 확정 |
 
-요청 본문 없음.
+**2단계 동작** — `분담안 확정` 버튼을 눌러도 확인 팝업이 먼저 떠야 하므로, 1차 호출은
+확정하지 않고 판단 결과만 돌려준다. 팝업의 `확정` 에서 `{"acknowledged": true}` 로 재호출한다.
 
-**응답 (200)** — `status` 가 `confirmed` 로 전이되고 `confirmed_at` 이 채워진 공통 객체.
+**응답 (200)**
+
+| 필드 | 타입 | 의미 |
+| --- | --- | --- |
+| `confirmed` | boolean | 실제로 확정됐는지. 1차 호출은 항상 false |
+| `needs_regenerate` | boolean | **분기는 이 필드 하나만 본다** — true 면 재생성 팝업 |
+| `has_changes` | boolean | 생성 이후 집안일 추가·수정·삭제가 있는지 |
+| `added_count` / `updated_count` / `removed_count` | integer | 팝업 문구용 건수 |
+| `blocked_reason` | string\|null | `chores_changed` / `members_changed` / `not_enough_chores` / null |
+| `assignment` | object\|null | 확정된 분담안(위 공통 객체). 1차 호출은 null |
+
+전체 시퀀스와 응답 예시 → [assignments-changes.md](./assignments-changes.md).
 
 **에러**
 
@@ -268,6 +278,7 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/7/regenerate/' \
 | --- | --- | --- |
 | 400 | `not_proposed` | proposed 상태가 아님 |
 | 400 | `already_confirmed_week` | 같은 주차에 확정본 존재 |
+| 400 | `no_members` | 집에 구성원이 없음 |
 | 401 | `authentication_failed` | 토큰 누락/만료 |
 | 403 | `permission_denied` | 관리자 아님 |
 | 404 | `not_found` | 분담안 없음 / 다른 집 |
@@ -275,14 +286,22 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/7/regenerate/' \
 | 409 | `members_changed` | 생성 이후 구성원 변화 감지 — 재생성 필요 |
 | 409 | `not_enough_chores` | 활성 집안일 3개 미만 — 재생성 필요 |
 
-> 409 는 `changes.has_changes === true` 의 주 원인이다. 조회 응답에서 이미
-> `has_changes` 로 미리 감지할 수 있다 → [assignments-changes.md](./assignments-changes.md).
+> 409 는 **2차 호출(`acknowledged: true`) 전용**이다. 1차 호출에서 `blocked_reason` 으로
+> 미리 잡히므로, 정상 흐름에서는 1차와 2차 사이에 원본이 바뀐 경우에만 나온다.
+> 400 계열은 재생성으로 해결되지 않는 상태 오류라 1차 호출에서도 그대로 400 이다.
 
 **요청 예시**
 
 ```bash
+# 1차 — 확정 전 체크 (확정되지 않는다)
 curl -X POST '{host}/api/v1/homes/mine/assignments/7/confirm/' \
      -H 'Authorization: Bearer <access>'
+
+# 2차 — 확인 팝업의 `확정`
+curl -X POST '{host}/api/v1/homes/mine/assignments/7/confirm/' \
+     -H 'Authorization: Bearer <access>' \
+     -H 'Content-Type: application/json' \
+     -d '{"acknowledged": true}'
 ```
 
 ---
@@ -398,8 +417,9 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/nudge/' \
 
 ### `change_type` (항목별)
 
-`updated`(원본 수정 → UPDATE 배지) / `removed`(원본 삭제) / `null`(변경 없음).
-`proposed` 상태에서만 값이 채워진다. 상세 → [assignments-changes.md](./assignments-changes.md).
+`new`(재생성으로 추가 → NEW 배지) / `updated`(직전과 다름 → UPDATE 배지) / `null`(변경 없음).
+**재생성 시점**에 직전 분담안과 비교해 DB 에 저장되는 값이라 최초 생성분은 전부 null 이다.
+상세 → [assignments-changes.md](./assignments-changes.md).
 
 ---
 
@@ -409,22 +429,23 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/nudge/' \
 
 1. `GET /assignments/?week_start=` 로 이번/다음 주차 분담안을 조회한다.
 2. `status === "proposed"` 이고 관리자면 **확정** / **재생성** 버튼을 노출한다.
-3. `changes.has_changes === true` 면 확정 대신 **"분담안 다시 생성하기"** 를 유도한다
-   (확정 시도 시 409 로 차단되기 때문). 확정 모달 2종:
-   `이대로 확정할까요?` / `추가된 집안일이 있어요 → 분담안 다시 생성하기`.
+3. `분담안 확정` 클릭 → `POST .../confirm/` (body 없음). 응답의 `needs_regenerate` 로 팝업을 고른다.
+   - `true` → `추가된 집안일이 있어요` → `분담안 다시 생성하기` 로 4번 이동
+   - `false` → `이번 주 집안일 이대로 확정할까요?` → `확정` 시 `{"acknowledged": true}` 로 재호출
 4. 재생성은 새 PK 를 반환하므로, 응답의 `id` 로 상태를 갱신하고 이후 확정 호출에 사용한다.
+   재생성된 항목에는 `change_type` 배지가 실려 온다.
 
-### 5.2 409 처리 (확정 실패)
+### 5.2 `blocked_reason` 별 안내 문구
 
-확정 `POST .../confirm/` 이 409 를 반환하면 `error.code` 로 사유를 구분해 안내한다.
+1차 호출에서 `needs_regenerate: true` 일 때 `blocked_reason` 으로 문구를 나눈다.
 
 | code | 사용자 안내 | 후속 액션 |
 | --- | --- | --- |
-| `chores_changed` | 생성 이후 집안일이 변경됨 | 재생성 유도 |
+| `chores_changed` | 생성 이후 집안일이 변경됨 (`added_count` / `updated_count` 활용) | 재생성 유도 |
 | `members_changed` | 생성 이후 구성원이 바뀜 | 재생성 유도 |
 | `not_enough_chores` | 활성 집안일 3개 미만 | 집안일 추가 후 재생성 |
 
-재생성(`POST .../regenerate/`) 후 다시 확정(`POST .../confirm/`)한다.
+재생성(`POST .../regenerate/`) 후 다시 1차 확정 호출부터 진행한다.
 
 ### 5.3 권한 분기
 
@@ -437,8 +458,8 @@ curl -X POST '{host}/api/v1/homes/mine/assignments/nudge/' \
 - `assignee` 필터는 `items[]` 만 좁히고 `member_points` 는 전체 기준을 유지한다.
 - 항목의 `chore_name`·`point` 등은 스냅샷이다. 최신 원본 값이 필요하면 집안일 API를 참조한다.
 
-### 5.5 변경 감지(NEW / UPDATE / 삭제)
+### 5.5 행 배지(NEW / UPDATE)
 
-`changes` 최상단 요약과 항목별 `change_type` 으로 행 배지를 그린다. NEW 행은 항목이
-아직 없어 `changes.new_entries` 를 직접 렌더링해야 한다.
+항목별 `change_type` 하나로 행 배지를 그린다 — 신규 행도 `items[]` 안에 들어 있으므로
+별도 배열을 합성할 필요가 없다.
 **전체 규칙·필드·예시는 [assignments-changes.md](./assignments-changes.md) 를 참조**한다.

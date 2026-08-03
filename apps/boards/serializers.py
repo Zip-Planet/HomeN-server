@@ -58,6 +58,13 @@ class BoardFeedOutputSerializer(serializers.Serializer):
     cards = BoardCardSerializer(many=True, help_text="봇/조율 카드 병합 목록 (최신순).")
 
 
+class CoordinationRequestResultSerializer(serializers.Serializer):
+    """도움/교환 카드 생성·수락·거절 응답."""
+
+    id = serializers.IntegerField(help_text="조율 카드 PK.")
+    status = serializers.CharField(help_text="pending / accepted / rejected / expired.")
+
+
 class HelpRequestCreateSerializer(serializers.Serializer):
     """도움 요청 생성."""
 

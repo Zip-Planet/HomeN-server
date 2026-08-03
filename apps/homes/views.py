@@ -27,8 +27,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.homes import selectors, services
-from apps.homes.models import WeeklyAssignment
 from apps.homes.serializers import (
+    AssignmentConfirmInputSerializer,
+    AssignmentConfirmOutputSerializer,
     AssignmentCreateSerializer,
     AssignmentHistoryOutputSerializer,
     AssignmentHistoryQuerySerializer,
@@ -1920,24 +1921,18 @@ class StarterPackChoreListView(APIView):
 
 
 def _serialize_assignment(assignment, *, assignee: str | None = None, request_user=None) -> dict:
-    """분담안을 완료 여부 / 변경 감지 컨텍스트와 함께 직렬화합니다.
+    """분담안을 완료 여부 컨텍스트와 함께 직렬화합니다.
 
-    변경 감지(`changes`)는 제안됨 상태에서만 의미가 있다 — 확정/만료 분담안은
-    불변 히스토리이므로 원본이 바뀌어도 배지를 노출하지 않는다.
+    `items[].change_type` 은 재생성 시점에 DB 에 구워둔 값이라 별도 계산이 없다.
 
     `assignee` 가 주어지면 항목 목록만 해당 담당자로 좁힌다(`me` 또는 uid).
     `member_points` 는 화면의 "구성원 배정 포인트" 카드가 항상 전체를 보여주므로
     필터의 영향을 받지 않는다.
     """
     completed_keys = selectors.get_completed_item_keys(assignment)
-    changes = (
-        selectors.get_assignment_changes(assignment)
-        if assignment.status == WeeklyAssignment.Status.PROPOSED
-        else None
-    )
     data = WeeklyAssignmentOutputSerializer(
         assignment,
-        context={"completed_keys": completed_keys, "changes": changes},
+        context={"completed_keys": completed_keys},
     ).data
 
     if assignee:
@@ -1968,6 +1963,8 @@ _ASSIGNMENT_OUTPUT_TABLE = (
     "| body | `items[].assignee` | object | 담당자 `{uid, name, profile_image}` — 탈퇴 시 null |\n"
     "| body | `items[].date` | date | 실행 날짜 (week_start + weekday) |\n"
     "| body | `items[].is_completed` | boolean | 완료 여부 (해당 날짜 ChoreCompletion 존재) |\n"
+    "| body | `items[].change_type` | string\\|null | 재생성 시 직전 분담안 대비 변경 — "
+    "`new`(화면 **NEW** 배지) / `updated`(**UPDATE** 배지) / null. 최초 생성분은 전부 null |\n"
     "| body | `member_points[]` | array | 멤버별 예상 포인트 합계 `{uid, name, profile_image, expected_point}` |\n\n"
 )
 
@@ -1987,7 +1984,7 @@ _ASSIGNMENT_EXAMPLE_JSON = (
     "      \"chore_name\": \"분리수거\", \"category\": 1, \"category_label\": \"쓰레기\",\n"
     "      \"difficulty\": 3, \"difficulty_label\": \"중간\", \"point\": 120,\n"
     "      \"assignee\": {\"uid\": \"8f3e…\", \"name\": \"김현수\", \"profile_image\": 2},\n"
-    "      \"date\": \"2026-07-13\", \"is_completed\": false\n"
+    "      \"date\": \"2026-07-13\", \"is_completed\": false, \"change_type\": \"updated\"\n"
     "    }\n"
     "  ],\n"
     "  \"member_points\": [{\"uid\": \"8f3e…\", \"name\": \"김현수\", \"profile_image\": 2, \"expected_point\": 120}]\n"
@@ -2017,6 +2014,7 @@ _ASSIGNMENT_EXAMPLE_VALUE = {
             "assignee": {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "김현수", "profile_image": 2},
             "date": "2026-07-13",
             "is_completed": False,
+            "change_type": "updated",
         },
         {
             "id": 32,
@@ -2032,6 +2030,7 @@ _ASSIGNMENT_EXAMPLE_VALUE = {
             "assignee": {"uid": "1a2b3c4d-5678-4abc-9def-abcdef123456", "name": "김수환", "profile_image": 5},
             "date": "2026-07-18",
             "is_completed": False,
+            "change_type": None,
         },
     ],
     "member_points": [
@@ -2062,8 +2061,8 @@ class HomeAssignmentView(APIView):
             "내 집의 특정 주차 분담안을 조회한다. `week_start` 생략 시 **이번 주차** "
             "(분담안 탭의 기본 진입 탭이 `이번 주`). 모든 구성원이 조회 가능하다. "
             "항목의 집안일명/난이도/포인트는 분담안 생성 시점 스냅샷이다.\n\n"
-            "제안됨(proposed) 상태에서는 생성 이후 집안일 변경을 `changes` 와 항목별 "
-            "`change_type` 으로 함께 내려준다 (화면의 NEW / UPDATE 배지).\n\n"
+            "항목별 `change_type` 은 **재생성 시점**에 직전 분담안과 비교해 구워둔 값이다 — "
+            "화면의 NEW / UPDATE 배지에 그대로 쓴다. 최초 생성분은 전부 null 이다.\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수.\n\n"
             "## 📥 요청\n"
@@ -2278,48 +2277,88 @@ class HomeAssignmentRegenerateView(APIView):
 
 
 class HomeAssignmentConfirmView(APIView):
-    """분담안 확정 (관리자 전용, 확정 조건 검증)."""
+    """분담안 확정 (관리자 전용) — 확정 전 체크와 실제 확정을 2단계로 처리한다."""
 
     @extend_schema(
         tags=["Homes"],
-        summary="분담안 확정 (관리자 전용)",
+        summary="분담안 확정 / 확정 전 체크 (관리자 전용)",
         description=(
             "## 🔥 설명\n"
             "proposed 분담안을 확정한다. **관리자 전용**. 확정된 분담안은 수정/삭제/재생성이 불가하다.\n\n"
+            "화면은 `분담안 확정` 버튼을 눌러도 곧바로 확정하지 않고 확인 팝업을 먼저 띄운다. "
+            "그래서 이 엔드포인트는 `acknowledged` 로 **2단계**로 동작한다.\n\n"
+            "| 호출 | body | 동작 |\n"
+            "| --- | --- | --- |\n"
+            "| 1차 (확정 버튼) | 없음 / `{\"acknowledged\": false}` | **확정하지 않고** 재생성 필요 여부만 반환 |\n"
+            "| 2차 (확인 팝업의 `확정`) | `{\"acknowledged\": true}` | 실제로 확정 |\n\n"
+            "1차 응답의 `needs_regenerate` 로 팝업을 고른다.\n\n"
+            "- `true` → \"추가된 집안일이 있어요\" 팝업 → `분담안 다시 생성하기`(재생성 API) 유도\n"
+            "- `false` → \"이번 주 집안일 이대로 확정할까요?\" 팝업 → `확정` 시 2차 호출\n\n"
             "확정 조건: proposed 상태 / 같은 주차 확정본 없음 / 구성원 1명 이상 / "
             "생성 시점 이후 **집안일 변경 없음** / **활성 집안일 3개 이상** / **구성원 변화 없음**. "
-            "뒤의 3개 조건 위반 시 409 를 반환하며, 재생성 후 다시 확정해야 한다.\n\n"
+            "뒤의 3개 조건은 1차 호출에서 `blocked_reason` 으로 알려주고, 2차 호출에서 위반 시 409 다 "
+            "(1차와 2차 사이에 원본이 바뀐 경우).\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수. **관리자만** 호출 가능 (구성원은 403).\n\n"
             "## 📥 요청\n"
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| path | `assignment_id` | integer | ✓ | 확정할 분담안 PK (proposed 상태) |\n\n"
-            "요청 본문 없음.\n\n"
+            "| path | `assignment_id` | integer | ✓ | 확정할 분담안 PK (proposed 상태) |\n"
+            "| body | `acknowledged` | boolean |  | 생략/false = 확정 전 체크, true = 실제 확정 |\n\n"
             "## 📤 응답 (200)\n"
-            "`status` 가 `confirmed` 로 전이되고 `confirmed_at` 이 채워진다.\n\n"
+            "| 위치 | 필드 | 타입 | 설명 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| body | `confirmed` | boolean | 실제로 확정됐는지. 1차 호출은 항상 false |\n"
+            "| body | `needs_regenerate` | boolean | **화면 분기는 이 필드 하나만 본다** — true 면 재생성 팝업 |\n"
+            "| body | `has_changes` | boolean | 생성 이후 집안일 추가/수정/삭제가 있는지 |\n"
+            "| body | `added_count` | integer | 생성 이후 추가돼 분담안에 없는 (집안일, 요일) 수 |\n"
+            "| body | `updated_count` | integer | 스냅샷과 원본이 어긋난 항목 수 |\n"
+            "| body | `removed_count` | integer | 원본이 삭제(비활성화)된 항목 수 |\n"
+            "| body | `blocked_reason` | string\\|null | `chores_changed` / `members_changed` / "
+            "`not_enough_chores` / null — 팝업 문구 변형용 |\n"
+            "| body | `assignment` | object\\|null | 확정된 분담안. 1차 호출은 null |\n\n"
+            "`assignment` 의 내부 구조:\n\n"
             + _ASSIGNMENT_OUTPUT_TABLE
             + "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
             "| 400 | `not_proposed` | proposed 상태가 아님 |\n"
             "| 400 | `already_confirmed_week` | 같은 주차에 확정본 존재 |\n"
+            "| 400 | `no_members` | 집에 구성원이 없음 |\n"
             "| 403 | `permission_denied` | 관리자 아님 |\n"
             "| 404 | `not_found` | 분담안 없음/다른 집 |\n"
-            "| 409 | `chores_changed` | 생성 이후 집안일 변경 감지 — 재생성 필요 |\n"
-            "| 409 | `members_changed` | 생성 이후 구성원 변화 감지 — 재생성 필요 |\n"
-            "| 409 | `not_enough_chores` | 활성 집안일 3개 미만 — 재생성 필요 |\n\n"
+            "| 409 | `chores_changed` | (2차 호출) 생성 이후 집안일 변경 감지 — 재생성 필요 |\n"
+            "| 409 | `members_changed` | (2차 호출) 생성 이후 구성원 변화 감지 — 재생성 필요 |\n"
+            "| 409 | `not_enough_chores` | (2차 호출) 활성 집안일 3개 미만 — 재생성 필요 |\n\n"
+            "> 400 계열은 재생성으로 해결되지 않는 상태 오류라 1차 호출에서도 그대로 400 이다.\n\n"
             "## 💻 예제\n"
-            "**요청:**\n"
+            "**1차 — 확정 전 체크:**\n"
             "```bash\n"
             "curl -X POST '{host}/api/v1/homes/mine/assignments/7/confirm/' \\\n"
             "     -H 'Authorization: Bearer <access>'\n"
             "```\n\n"
-            "**응답 (200):** 위 분담안 응답 구조와 동일하되 `status: \"confirmed\"`, `confirmed_at` 채워짐.\n"
+            "```json\n"
+            "{\n"
+            "  \"confirmed\": false, \"needs_regenerate\": true, \"has_changes\": true,\n"
+            "  \"added_count\": 2, \"updated_count\": 1, \"removed_count\": 0,\n"
+            "  \"blocked_reason\": \"chores_changed\", \"assignment\": null\n"
+            "}\n"
+            "```\n\n"
+            "**2차 — 실제 확정:**\n"
+            "```bash\n"
+            "curl -X POST '{host}/api/v1/homes/mine/assignments/7/confirm/' \\\n"
+            "     -H 'Authorization: Bearer <access>' \\\n"
+            "     -H 'Content-Type: application/json' \\\n"
+            "     -d '{\"acknowledged\": true}'\n"
+            "```\n\n"
+            "`assignment.status` 가 `confirmed` 로 전이되고 `confirmed_at` 이 채워진다.\n"
         ),
-        request=None,
+        request=AssignmentConfirmInputSerializer,
         responses={
-            200: OpenApiResponse(response=WeeklyAssignmentOutputSerializer, description="확정된 분담안 (confirmed)."),
+            200: OpenApiResponse(
+                response=AssignmentConfirmOutputSerializer,
+                description="확정 전 체크 결과 또는 확정된 분담안.",
+            ),
             400: OpenApiResponse(response=ErrorResponseSerializer, description="상태 조건 위반."),
             401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
             403: OpenApiResponse(response=ErrorResponseSerializer, description="관리자 아님."),
@@ -2328,8 +2367,47 @@ class HomeAssignmentConfirmView(APIView):
         },
         examples=[
             OpenApiExample(
-                "확정된 분담안 (confirmed)",
-                value=_ASSIGNMENT_CONFIRMED_EXAMPLE_VALUE,
+                "1차 — 변경 있음 (재생성 유도)",
+                value={
+                    "confirmed": False,
+                    "needs_regenerate": True,
+                    "has_changes": True,
+                    "added_count": 2,
+                    "updated_count": 1,
+                    "removed_count": 0,
+                    "blocked_reason": "chores_changed",
+                    "assignment": None,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            OpenApiExample(
+                "1차 — 변경 없음 (확정 확인)",
+                value={
+                    "confirmed": False,
+                    "needs_regenerate": False,
+                    "has_changes": False,
+                    "added_count": 0,
+                    "updated_count": 0,
+                    "removed_count": 0,
+                    "blocked_reason": None,
+                    "assignment": None,
+                },
+                response_only=True,
+                status_codes=["200"],
+            ),
+            OpenApiExample(
+                "2차 — 확정 완료",
+                value={
+                    "confirmed": True,
+                    "needs_regenerate": False,
+                    "has_changes": False,
+                    "added_count": 0,
+                    "updated_count": 0,
+                    "removed_count": 0,
+                    "blocked_reason": None,
+                    "assignment": _ASSIGNMENT_CONFIRMED_EXAMPLE_VALUE,
+                },
                 response_only=True,
                 status_codes=["200"],
             ),
@@ -2342,7 +2420,16 @@ class HomeAssignmentConfirmView(APIView):
         ],
     )
     def post(self, request: Request, assignment_id: int) -> Response:
+        payload = AssignmentConfirmInputSerializer(data=request.data or {})
+        payload.is_valid(raise_exception=True)
+
         try:
+            if not payload.validated_data["acknowledged"]:
+                return Response(
+                    services.preview_assignment_confirm(
+                        user=request.user, assignment_id=assignment_id
+                    )
+                )
             assignment = services.confirm_assignment(user=request.user, assignment_id=assignment_id)
         except services.NotHomeAdminError as e:
             raise PermissionDenied(str(e)) from e
@@ -2353,7 +2440,16 @@ class HomeAssignmentConfirmView(APIView):
         except services.AssignmentStateError as e:
             raise ValidationError({e.code: str(e)}) from e
 
-        return Response(_serialize_assignment(assignment))
+        return Response({
+            "confirmed": True,
+            "needs_regenerate": False,
+            "has_changes": False,
+            "added_count": 0,
+            "updated_count": 0,
+            "removed_count": 0,
+            "blocked_reason": None,
+            "assignment": _serialize_assignment(assignment),
+        })
 
 
 # ── 집안일 완료 처리 ─────────────────────────────────────────────────────────

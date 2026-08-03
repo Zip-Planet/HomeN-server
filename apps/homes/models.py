@@ -342,7 +342,13 @@ class AssignmentItem(models.Model):
         weekday: 실행 요일 (0=월 ~ 6=일).
         assignee: 자동 배정된 담당자 (탈퇴 시 null).
         chore_name / category / difficulty / point: 생성 시점 스냅샷.
+        change_type: 재생성 시 직전 분담안 대비 차이 (화면의 NEW / UPDATE 배지).
+            최초 생성분은 비교 대상이 없어 전부 null.
     """
+
+    class ChangeType(models.TextChoices):
+        NEW = "new", "추가됨"
+        UPDATED = "updated", "수정됨"
 
     assignment = models.ForeignKey(WeeklyAssignment, on_delete=models.CASCADE, related_name="items")
     home_chore = models.ForeignKey(
@@ -364,6 +370,12 @@ class AssignmentItem(models.Model):
     category = models.IntegerField(choices=ChoreCategory.choices)
     difficulty = models.IntegerField(choices=Chore.Difficulty.choices)
     point = models.IntegerField()
+    change_type = models.CharField(
+        max_length=10,
+        choices=ChangeType.choices,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         db_table = "assignment_items"
