@@ -123,6 +123,24 @@
 | 활성 집안일 3개 이상 | 중요 | 확정 불가(409) — 재생성 유도 |
 | 생성 시점 이후 구성원 변화 없음 (`member_uids_snapshot` 일치) | 중요 | 확정 불가(409) — 재생성 유도 |
 
+### 확정 2단계 (화면 플로우)
+`분담안 확정` 버튼을 눌러도 곧바로 확정하지 않는다. 확인 팝업을 먼저 띄워야 하므로
+확정 엔드포인트가 요청 본문의 `acknowledged` 로 2단계로 동작한다.
+
+```
+[분담안 확정] ──▶ POST confirm {}            (1차 — 확정하지 않고 체크만)
+                    │
+                    ├─ needs_regenerate=true  ──▶ "추가된 집안일이 있어요" 팝업
+                    │                              └─[분담안 다시 생성하기]──▶ POST regenerate
+                    │                                    └─▶ NEW/UPDATE 배지가 실린 분담안
+                    └─ needs_regenerate=false ──▶ "이대로 확정할까요?" 팝업
+                                                   └─[확정]──▶ POST confirm {"acknowledged": true}
+```
+
+- 1차 호출은 **부작용이 없다** — 상태는 `proposed` 그대로다.
+- `needs_regenerate = has_changes || blocked_reason != null`. 화면은 이 필드 하나만 보면 된다.
+- 1차와 2차 사이에 원본이 바뀔 수 있으므로 2차 호출도 확정 조건을 다시 검증한다(위반 시 409).
+
 ### 확정 후 생성/보장되는 값
 - 원본 집안일 ID(`home_chore`) / 확정 분담안 ID
 - 담당자 ID / 실행 날짜(주차 `week_start` + `weekday`)
@@ -173,7 +191,8 @@
       "point": 120,
       "assignee": {"uid": "…", "name": "김현수", "profile_image": 2},
       "date": "2026-07-06",
-      "is_completed": false
+      "is_completed": false,
+      "change_type": null
     }
   ],
   "member_points": [
@@ -181,27 +200,20 @@
   ]
 }
 ```
-`items[].change_type` / `changes` — 생성 시점 이후 원본 변경 표시 (제안됨 상태에서만 계산):
 
-```json
-{
-  "items": [{"id": 10, "change_type": "updated"}],
-  "changes": {
-    "has_changes": true,
-    "new_entries": [
-      {"home_chore_id": 9, "chore_name": "화장실 청소", "category": 2, "difficulty": 4, "point": 160, "weekday": 5}
-    ],
-    "updated_item_ids": [10],
-    "removed_item_ids": []
-  }
-}
-```
+`items[].change_type` — **재생성 시점**에 직전 분담안과 비교해 굽는 값. 화면의 행 배지다.
 
-- `change_type`: `updated`(화면 **UPDATE** 배지) / `removed`(원본 삭제) / null.
-- `new_entries`: 생성 이후 추가돼 분담안에 없는 (집안일, 요일) 행 — 화면 **NEW** 배지.
-  항목은 생성 시점 스냅샷이라 신규 집안일은 항목 자체가 없기 때문에 별도로 내려준다.
-- `has_changes` 가 true 면 확정 시 409(`chores_changed`)가 발생하므로 재생성을 유도한다
-  (확정 모달 2종: `이대로 확정할까요?` / `추가된 집안일이 있어요 → 분담안 다시 생성하기`).
+| 값 | 조건 | 화면 |
+| --- | --- | --- |
+| `new` | 재생성으로 새로 추가된 (집안일, 요일) | **NEW** 배지 |
+| `updated` | 이름·카테고리·난이도·포인트 중 하나가 직전과 다름 | **UPDATE** 배지 |
+| `null` | 직전과 동일. 최초 생성분은 항상 이 값 | 배지 없음 |
+
+- **DB 에 저장된 값**이라 조회 때 계산하지 않는다. 확정·만료된 분담안도 생성 당시 값을 그대로 보존한다.
+- 담당자 변경은 배지로 치지 않는다 — 재생성은 동점 시 무작위 tie-break 이라 담당자가 거의 매번 바뀐다.
+- 원본이 삭제된 집안일은 새 분담안에 항목 자체가 없으므로 별도 표시가 없다.
+- 변경 없이 연속 재생성하면 직전 재생성본과 같아 배지가 사라진다 — 배지의 의미가
+  "이번 재생성으로 무엇이 바뀌었나" 이기 때문이다.
 
 **Error 404** — 해당 주차 분담안 없음.
 
@@ -246,11 +258,32 @@
 
 ### POST /api/v1/homes/mine/assignments/{id}/confirm/
 분담안 확정 (**관리자 전용**). 위 확정 조건 6종을 검증한다.
+요청 본문 `acknowledged` 로 2단계 동작 — 생략/`false` 면 확정 전 체크, `true` 면 실제 확정.
 
-- 200: 확정된 분담안
-- 409: 집안일 변경/구성원 변화/활성 집안일 부족 감지 — `error.code` 로 사유 구분
+```json
+{
+  "confirmed": false,
+  "needs_regenerate": true,
+  "has_changes": true,
+  "added_count": 2,
+  "updated_count": 1,
+  "removed_count": 0,
+  "blocked_reason": "chores_changed",
+  "assignment": null
+}
+```
+
+- `confirmed`: 실제로 확정됐는지. 1차 호출은 항상 false.
+- `needs_regenerate`: 화면 분기 기준. true 면 재생성 팝업, false 면 확정 확인 팝업.
+- `added_count` / `updated_count` / `removed_count`: 팝업 문구용 건수.
+- `blocked_reason`: `chores_changed` / `members_changed` / `not_enough_chores` / null.
+- `assignment`: 확정된 분담안(위 조회 응답과 동일 구조). 1차 호출은 null.
+
+- 200: 확정 전 체크 결과 또는 확정 완료
+- 409: (2차 호출) 집안일 변경/구성원 변화/활성 집안일 부족 감지 — `error.code` 로 사유 구분
   (`chores_changed` / `members_changed` / `not_enough_chores`), 재생성 유도
-- 400: proposed 아님 / 같은 주차 확정본 존재 · 403: 관리자 아님 · 404: 없음
+- 400: proposed 아님 / 같은 주차 확정본 존재 / 구성원 없음 (1차 호출에서도 400) ·
+  403: 관리자 아님 · 404: 없음
 
 ---
 
