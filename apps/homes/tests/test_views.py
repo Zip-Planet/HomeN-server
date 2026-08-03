@@ -1501,7 +1501,7 @@ class TestHomeAssignmentView:
         # 구성원 배정 포인트는 필터와 무관하게 전체를 유지한다.
         assert len(res.data["member_points"]) == 2
 
-    def test_제안됨_응답에_changes_와_change_type_포함(self):
+    def test_응답에_changes_요약은_없고_항목별_change_type_만_있다(self):
         from apps.homes.services import next_week_start
 
         home, admin = _assignment_home()
@@ -1511,9 +1511,24 @@ class TestHomeAssignmentView:
 
         res = auth_client(admin).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
 
-        assert res.data["changes"]["has_changes"] is True
-        assert res.data["changes"]["new_entries"][0]["chore_name"] == "화장실 청소"
+        assert "changes" not in res.data
+        # 최초 생성분이므로 원본이 바뀌어도 배지는 붙지 않는다 (재생성 시점에 굽는 값).
         assert all(i["change_type"] is None for i in res.data["items"])
+
+    def test_재생성_후_응답에_new_배지가_실린다(self):
+        from apps.homes.services import next_week_start
+
+        home, admin = _assignment_home()
+        assignment_id = auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json").data["id"]
+        chore = ChoreFactory(starter_pack=None, name="화장실 청소", repeat_days=[5])
+        HomeChoreFactory(home=home, chore=chore)
+        auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/regenerate/")
+
+        res = auth_client(admin).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
+
+        badges = {i["chore_name"]: i["change_type"] for i in res.data["items"]}
+        assert badges["화장실 청소"] == "new"
+        assert badges["집안일0"] is None
 
     def test_분담안_없으면_404(self):
         _home, admin = _assignment_home()
@@ -1537,6 +1552,8 @@ class TestHomeAssignmentView:
 
 
 class TestHomeAssignmentRegenerateConfirmView:
+    """재생성 / 확정. 확정은 `acknowledged` 로 2단계(확정 전 체크 → 실제 확정)로 동작한다."""
+
     def _create(self, admin):
         res = auth_client(admin).post(_ASSIGNMENT_URL, {}, format="json")
         assert res.status_code == 201
@@ -1552,16 +1569,23 @@ class TestHomeAssignmentRegenerateConfirmView:
         assert res.data["id"] != assignment_id
         assert res.data["status"] == "proposed"
 
-    def test_확정_200(self):
+    def test_확정_전_체크는_확정하지_않고_변경_없음을_알려준다(self):
+        from apps.homes.services import next_week_start
+
         _home, admin = _assignment_home()
         assignment_id = self._create(admin)
 
         res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
 
         assert res.status_code == 200
-        assert res.data["status"] == "confirmed"
+        assert res.data["confirmed"] is False
+        assert res.data["needs_regenerate"] is False
+        assert res.data["assignment"] is None
+        # 아직 확정되지 않았는지 조회로 확인
+        detail = auth_client(admin).get(_ASSIGNMENT_URL, {"week_start": str(next_week_start())})
+        assert detail.data["status"] == "proposed"
 
-    def test_생성_이후_집안일_변경되면_확정_409(self):
+    def test_확정_전_체크가_추가된_집안일을_알려준다(self):
         home, admin = _assignment_home()
         assignment_id = self._create(admin)
         chore = ChoreFactory(starter_pack=None, name="신규", repeat_days=[2])
@@ -1569,13 +1593,44 @@ class TestHomeAssignmentRegenerateConfirmView:
 
         res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
 
+        assert res.status_code == 200
+        assert res.data["needs_regenerate"] is True
+        assert res.data["has_changes"] is True
+        assert res.data["added_count"] == 1
+        assert res.data["blocked_reason"] == "chores_changed"
+
+    def test_acknowledged_true_면_확정_200(self):
+        _home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+
+        res = auth_client(admin).post(
+            f"{_ASSIGNMENT_URL}{assignment_id}/confirm/", {"acknowledged": True}, format="json"
+        )
+
+        assert res.status_code == 200
+        assert res.data["confirmed"] is True
+        assert res.data["assignment"]["status"] == "confirmed"
+        assert res.data["assignment"]["confirmed_at"] is not None
+
+    def test_생성_이후_집안일_변경되면_확정_409(self):
+        home, admin = _assignment_home()
+        assignment_id = self._create(admin)
+        chore = ChoreFactory(starter_pack=None, name="신규", repeat_days=[2])
+        HomeChoreFactory(home=home, chore=chore)
+
+        res = auth_client(admin).post(
+            f"{_ASSIGNMENT_URL}{assignment_id}/confirm/", {"acknowledged": True}, format="json"
+        )
+
         assert res.status_code == 409
         assert res.data["error"]["code"] == "chores_changed"
 
     def test_확정본_재생성_400(self):
         _home, admin = _assignment_home()
         assignment_id = self._create(admin)
-        auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/confirm/")
+        auth_client(admin).post(
+            f"{_ASSIGNMENT_URL}{assignment_id}/confirm/", {"acknowledged": True}, format="json"
+        )
 
         res = auth_client(admin).post(f"{_ASSIGNMENT_URL}{assignment_id}/regenerate/")
 

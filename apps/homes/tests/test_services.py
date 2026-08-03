@@ -5,7 +5,16 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
-from apps.homes.models import Chore, ChoreCategory, Home, HomeChore, HomeMember, HomeImageType, WeeklyAssignment
+from apps.homes.models import (
+    AssignmentItem,
+    Chore,
+    ChoreCategory,
+    Home,
+    HomeChore,
+    HomeImageType,
+    HomeMember,
+    WeeklyAssignment,
+)
 from apps.homes.services import (
     AdminCannotLeaveError,
     AlreadyHasHomeError,
@@ -27,6 +36,7 @@ from apps.homes.services import (
     join_home,
     leave_home,
     next_week_start,
+    preview_assignment_confirm,
     regenerate_assignment,
     transfer_admin,
     update_home_chore,
@@ -953,3 +963,154 @@ class TestAssignmentChanges:
 
         assert changes["has_changes"] is False
         assert changes["new_entries"] == []
+
+
+class TestAssignmentItemChangeType:
+    """재생성 시 직전 분담안 대비 굽는 `change_type` (화면의 NEW / UPDATE 배지)."""
+
+    def test_최초_생성분은_전부_None(self):
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+
+        assignment = generate_assignment(user=admin)
+
+        assert {item.change_type for item in assignment.items.all()} == {None}
+
+    def test_재생성으로_추가된_집안일은_new(self):
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        _add_chore(home, name="화장실 청소", repeat_days=[5])
+
+        regenerated = regenerate_assignment(user=admin, assignment_id=assignment.id)
+
+        new_items = regenerated.items.filter(change_type=AssignmentItem.ChangeType.NEW)
+        assert [item.chore_name for item in new_items] == ["화장실 청소"]
+        assert regenerated.items.filter(change_type__isnull=True).count() == 3
+
+    def test_재생성_시_수정된_집안일은_updated(self):
+        home, admin = _make_home_with_admin()
+        target = _add_chore(home, name="분리수거", difficulty=Chore.Difficulty.MEDIUM, repeat_days=[0])
+        _add_chore(home, name="설거지", repeat_days=[0])
+        _add_chore(home, name="빨래", repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        update_home_chore(user=admin, home_chore_id=target.id, fields={"difficulty": Chore.Difficulty.HIGH})
+
+        regenerated = regenerate_assignment(user=admin, assignment_id=assignment.id)
+
+        updated = list(regenerated.items.filter(change_type=AssignmentItem.ChangeType.UPDATED))
+        assert [item.chore_name for item in updated] == ["분리수거"]
+
+    def test_변경_없이_재생성하면_배지가_사라진다(self):
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        _add_chore(home, name="화장실 청소", repeat_days=[5])
+        once = regenerate_assignment(user=admin, assignment_id=assignment.id)
+        assert once.items.filter(change_type__isnull=False).exists()
+
+        twice = regenerate_assignment(user=admin, assignment_id=once.id)
+
+        assert {item.change_type for item in twice.items.all()} == {None}
+
+    def test_담당자만_바뀐_항목은_배지가_붙지_않는다(self):
+        home, admin = _make_home_with_admin()
+        HomeMemberFactory(home=home, user=UserFactory(), role=HomeMember.Role.MEMBER)
+        for name in ("분리수거", "설거지", "빨래", "화장실 청소"):
+            _add_chore(home, name=name, repeat_days=[0])
+        assignment = generate_assignment(user=admin)
+        before = {item.home_chore_id: item.assignee_id for item in assignment.items.all()}
+
+        regenerated = regenerate_assignment(user=admin, assignment_id=assignment.id)
+
+        # 재생성은 동점 시 무작위 tie-break 이라 담당자가 바뀔 수 있으나, 집안일 자체는
+        # 그대로이므로 배지는 붙지 않아야 한다.
+        after = {item.home_chore_id: item.assignee_id for item in regenerated.items.all()}
+        assert before.keys() == after.keys()
+        assert {item.change_type for item in regenerated.items.all()} == {None}
+
+
+class TestPreviewAssignmentConfirm:
+    """확정 전 체크 — 확정하지 않고 재생성 필요 여부만 알려준다."""
+
+    def _home_with_proposed(self):
+        home, admin = _make_home_with_admin()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, repeat_days=[0])
+        return home, admin, generate_assignment(user=admin)
+
+    def test_변경이_없으면_재생성_불필요(self):
+        _home, admin, assignment = self._home_with_proposed()
+
+        result = preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+
+        assert result["confirmed"] is False
+        assert result["needs_regenerate"] is False
+        assert result["has_changes"] is False
+        assert result["blocked_reason"] is None
+        assert result["assignment"] is None
+
+    def test_체크만_해서는_확정되지_않는다(self):
+        _home, admin, assignment = self._home_with_proposed()
+
+        preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+
+        assignment.refresh_from_db()
+        assert assignment.status == WeeklyAssignment.Status.PROPOSED
+        assert assignment.confirmed_at is None
+
+    def test_집안일_추가와_수정을_건수로_알려준다(self):
+        home, admin, assignment = self._home_with_proposed()
+        target = HomeChore.objects.filter(home=home, chore__name="분리수거").first()
+        update_home_chore(user=admin, home_chore_id=target.id, fields={"difficulty": Chore.Difficulty.HIGH})
+        _add_chore(home, name="화장실 청소", repeat_days=[5])
+
+        result = preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+
+        assert result["needs_regenerate"] is True
+        assert result["has_changes"] is True
+        assert result["added_count"] == 1
+        assert result["updated_count"] == 1
+        assert result["removed_count"] == 0
+        assert result["blocked_reason"] == "chores_changed"
+
+    def test_구성원_변경은_blocked_reason_으로_알려준다(self):
+        home, admin, assignment = self._home_with_proposed()
+        HomeMemberFactory(home=home, user=UserFactory(), role=HomeMember.Role.MEMBER)
+
+        result = preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+
+        assert result["needs_regenerate"] is True
+        assert result["has_changes"] is False
+        assert result["blocked_reason"] == "members_changed"
+
+    def test_활성_집안일이_부족하면_blocked_reason(self):
+        home, admin, assignment = self._home_with_proposed()
+        target = HomeChore.objects.filter(home=home, chore__name="분리수거").first()
+        target.is_active = False
+        target.save(update_fields=["is_active"])
+
+        result = preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+
+        assert result["needs_regenerate"] is True
+        assert result["blocked_reason"] == "not_enough_chores"
+        assert result["removed_count"] == 1
+
+    def test_확정된_분담안은_400(self):
+        _home, admin, assignment = self._home_with_proposed()
+        confirm_assignment(user=admin, assignment_id=assignment.id)
+
+        with pytest.raises(AssignmentStateError) as exc:
+            preview_assignment_confirm(user=admin, assignment_id=assignment.id)
+        assert exc.value.code == "not_proposed"
+
+    def test_관리자가_아니면_거부(self):
+        home, _admin, assignment = self._home_with_proposed()
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+
+        with pytest.raises(NotHomeAdminError):
+            preview_assignment_confirm(user=member, assignment_id=assignment.id)
