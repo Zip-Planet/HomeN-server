@@ -875,13 +875,6 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
     is_completed = serializers.SerializerMethodField(
         help_text="완료 여부 — 해당 날짜의 ChoreCompletion 존재 여부.",
     )
-    change_type = serializers.SerializerMethodField(
-        help_text=(
-            "생성 시점 이후 원본 변경 표시 — `updated`(수정됨, 화면 UPDATE 배지) / "
-            "`removed`(원본 삭제됨) / null(변경 없음)."
-        ),
-    )
-
     class Meta:
         model = AssignmentItem
         fields = [
@@ -907,6 +900,13 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
             "category": {"help_text": "생성 시점 카테고리 enum (스냅샷)."},
             "difficulty": {"help_text": "생성 시점 난이도 enum (스냅샷)."},
             "point": {"help_text": "생성 시점 포인트 (스냅샷)."},
+            "change_type": {
+                "help_text": (
+                    "재생성 시 직전 분담안 대비 변경 — `new`(추가됨, 화면 NEW 배지) / "
+                    "`updated`(수정됨, 화면 UPDATE 배지) / null(변경 없음). "
+                    "최초 생성분은 비교 대상이 없어 전부 null."
+                ),
+            },
         }
 
     def get_weekday_label(self, obj: AssignmentItem) -> str:
@@ -932,16 +932,6 @@ class AssignmentItemOutputSerializer(serializers.ModelSerializer):
         item_date = obj.assignment.week_start + timedelta(days=obj.weekday)
         return (obj.home_chore_id, item_date) in completed_keys
 
-    def get_change_type(self, obj: AssignmentItem) -> str | None:
-        changes = self.context.get("changes")
-        if not changes:
-            return None
-        if obj.id in set(changes.get("removed_item_ids", [])):
-            return "removed"
-        if obj.id in set(changes.get("updated_item_ids", [])):
-            return "updated"
-        return None
-
 
 class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
     """분담안 응답 — 항목 목록과 멤버별 예상 포인트 합계 포함."""
@@ -949,13 +939,6 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
     items = AssignmentItemOutputSerializer(many=True, help_text="분담안 항목 목록 (요일순).")
     member_points = serializers.SerializerMethodField(
         help_text="멤버별 예상 배정 포인트 합계 [{uid, name, profile_image, expected_point}].",
-    )
-    changes = serializers.SerializerMethodField(
-        help_text=(
-            "생성 시점 이후 집안일 변경 요약. `new_entries` 는 분담안에 없는 신규 "
-            "(집안일, 요일) 행 — 화면에서 NEW 배지로 노출한다. `has_changes` 가 true 면 "
-            "확정 시 409(chores_changed) 가 발생하므로 재생성을 유도한다."
-        ),
     )
 
     class Meta:
@@ -968,7 +951,6 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
             "confirmed_at",
             "items",
             "member_points",
-            "changes",
         ]
         extra_kwargs = {
             "id": {"help_text": "분담안 PK."},
@@ -996,11 +978,57 @@ class WeeklyAssignmentOutputSerializer(serializers.ModelSerializer):
             entry["expected_point"] += item.point
         return sorted(totals.values(), key=lambda e: e["uid"])
 
-    def get_changes(self, obj: WeeklyAssignment) -> dict:
-        return self.context.get(
-            "changes",
-            {"has_changes": False, "new_entries": [], "updated_item_ids": [], "removed_item_ids": []},
-        )
+
+# ── 분담안 확정 ──────────────────────────────────────────────────────────────
+
+
+@extend_schema_serializer(
+    examples=[
+        OpenApiExample("확정 전 체크", value={}, request_only=True),
+        OpenApiExample("실제 확정", value={"acknowledged": True}, request_only=True),
+    ]
+)
+class AssignmentConfirmInputSerializer(serializers.Serializer):
+    """분담안 확정 요청 — 확정 전 체크와 실제 확정을 한 엔드포인트로 처리한다."""
+
+    acknowledged = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=(
+            "false/생략이면 **확정하지 않고** 재생성 필요 여부만 반환한다 (확정 버튼 클릭). "
+            "true 면 실제로 확정한다 (확정 확인 팝업의 `확정`)."
+        ),
+    )
+
+
+class AssignmentConfirmOutputSerializer(serializers.Serializer):
+    """분담안 확정 응답 — 확정 전 체크와 확정 완료가 같은 구조를 쓴다.
+
+    화면 분기는 `needs_regenerate` 하나만 보면 된다. 나머지는 팝업 문구용이다.
+    """
+
+    confirmed = serializers.BooleanField(help_text="실제로 확정됐는지. 확정 전 체크는 항상 false.")
+    needs_regenerate = serializers.BooleanField(
+        help_text=(
+            "true 면 재생성 유도 팝업(\"추가된 집안일이 있어요\"), "
+            "false 면 확정 확인 팝업(\"이대로 확정할까요?\")."
+        ),
+    )
+    has_changes = serializers.BooleanField(help_text="생성 시점 이후 집안일 추가/수정/삭제가 있는지.")
+    added_count = serializers.IntegerField(help_text="생성 이후 추가돼 분담안에 없는 (집안일, 요일) 수.")
+    updated_count = serializers.IntegerField(help_text="스냅샷과 원본이 어긋난 항목 수.")
+    removed_count = serializers.IntegerField(help_text="원본이 삭제(비활성화)된 항목 수.")
+    blocked_reason = serializers.CharField(
+        allow_null=True,
+        help_text=(
+            "확정을 막는 사유 — `chores_changed` / `members_changed` / `not_enough_chores`. "
+            "없으면 null. 팝업 문구 변형에 쓴다."
+        ),
+    )
+    assignment = WeeklyAssignmentOutputSerializer(
+        allow_null=True,
+        help_text="확정된 분담안. 확정 전 체크에서는 null.",
+    )
 
 
 # ── 집안일 완료 처리 ─────────────────────────────────────────────────────────
