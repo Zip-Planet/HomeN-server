@@ -111,6 +111,9 @@ class TestRewardDetailView:
 
         assert res.status_code == 200
         assert res.data["member_progress"][0]["rank"] == 1
+        assert res.data["member_progress"][0]["uid"] == str(admin.uid)
+        assert res.data["member_progress"][0]["name"] == admin.name
+        assert res.data["member_progress"][0]["profile_image"] == admin.profile_image
         assert res.data["member_progress"][0]["point"] == 240
         assert res.data["member_progress"][0]["achievement_rate"] == 50
         assert res.data["remaining_point"] == 240
