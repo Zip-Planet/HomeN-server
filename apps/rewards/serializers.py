@@ -6,7 +6,7 @@
 - `W2_RewardCreateEdit` (등록/수정) — 입력은 이름(0/20) + 목표 포인트 뿐이다.
 """
 
-from drf_spectacular.utils import OpenApiExample, extend_schema_serializer
+from drf_spectacular.utils import OpenApiExample, extend_schema_field, extend_schema_serializer
 from rest_framework import serializers
 
 from apps.rewards.models import Reward
@@ -142,6 +142,7 @@ class RewardDetailOutputSerializer(RewardOutputSerializer):
     class Meta(RewardOutputSerializer.Meta):
         fields = RewardOutputSerializer.Meta.fields + ["member_progress"]
 
+    @extend_schema_field(RewardMemberProgressSerializer(many=True))
     def get_member_progress(self, obj: Reward) -> list[dict]:
         return self.context.get("member_progress", [])
 
