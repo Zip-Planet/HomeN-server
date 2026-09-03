@@ -102,9 +102,22 @@
 
 ### GET /api/v1/homes/mine/rewards/{id}/
 목록 항목 구조 + `member_progress` (구성원 현황 랭킹).
+받기 완료 화면의 **수령자·수령 일시**는 `claim` 으로 내려간다 (미수령이면 `null`).
 
 ```json
 {
+  "id": 1,
+  "name": "팀원들이 치킨 사주기",
+  "goal_point": 3000,
+  "status": "claimed",
+  "remaining_point": 0,
+  "created_by": {"uid": "…", "name": "닉네임_01", "profile_image": 2},
+  "claim": {
+    "claimed_by": {"uid": "…", "name": "요정팅커벨", "profile_image": 2},
+    "claimed_point": 3000,
+    "claimed_at": "2026-04-08T09:12:00Z"
+  },
+  "created_at": "2026-01-02T10:00:00Z",
   "member_progress": [
     {"rank": 1, "uid": "…", "name": "투다리김치우동", "profile_image": 1, "point": 3470, "achievement_rate": 100},
     {"rank": 2, "uid": "…", "name": "요정팅커벨", "profile_image": 2, "point": 1470, "achievement_rate": 50}
