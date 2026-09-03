@@ -118,6 +118,21 @@ class TestRewardDetailView:
         assert res.data["member_progress"][0]["achievement_rate"] == 50
         assert res.data["remaining_point"] == 240
 
+    def test_수령_완료_리워드_상세에_수령자와_수령_일시_포함(self):
+        home, admin = _home_with_points(complete=3)  # 360P
+        reward = RewardFactory(home=home, goal_point=360, created_by=admin)
+        client = auth_client(admin)
+        client.post(f"{_REWARD_URL}{reward.id}/claim/")
+
+        res = client.get(f"{_REWARD_URL}{reward.id}/")
+
+        assert res.status_code == 200
+        assert res.data["status"] == "claimed"
+        assert res.data["claim"]["claimed_by"]["uid"] == str(admin.uid)
+        assert res.data["claim"]["claimed_by"]["name"] == admin.name
+        assert res.data["claim"]["claimed_point"] == 360
+        assert res.data["claim"]["claimed_at"] is not None
+
     def test_수정_200(self):
         home, admin = _home_with_points()
         reward = RewardFactory(home=home, goal_point=100, created_by=admin)

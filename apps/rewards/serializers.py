@@ -46,10 +46,18 @@ class RewardMemberProgressSerializer(serializers.Serializer):
     achievement_rate = serializers.IntegerField(help_text="목표 대비 달성률 % (최대 100).")
 
 
-class RewardClaimOutputSerializer(serializers.Serializer):
-    """수령 이력 응답."""
+class RewardUserSerializer(serializers.Serializer):
+    """리워드 응답에 실리는 유저 요약 — 등록자(`created_by`) / 수령자(`claimed_by`)."""
 
-    claimed_by = serializers.DictField(allow_null=True, help_text="수령자 {uid, name, profile_image}.")
+    uid = serializers.CharField(help_text="유저 uid.")
+    name = serializers.CharField(help_text="닉네임.")
+    profile_image = serializers.IntegerField(allow_null=True, help_text="프로필 이미지 enum.")
+
+
+class RewardClaimOutputSerializer(serializers.Serializer):
+    """수령 이력 응답 — 받기 완료 화면의 수령자·수령 일시."""
+
+    claimed_by = RewardUserSerializer(allow_null=True, help_text="수령자. 탈퇴 시 null.")
     claimed_point = serializers.IntegerField(help_text="수령 시점 목표 포인트 스냅샷.")
     claimed_at = serializers.DateTimeField(help_text="수령 일시.")
 
@@ -105,6 +113,7 @@ class RewardOutputSerializer(serializers.ModelSerializer):
     def get_remaining_point(self, obj: Reward) -> int:
         return max(obj.goal_point - self._balance(), 0)
 
+    @extend_schema_field(RewardUserSerializer(allow_null=True))
     def get_created_by(self, obj: Reward) -> dict | None:
         if obj.created_by is None:
             return None
@@ -114,6 +123,7 @@ class RewardOutputSerializer(serializers.ModelSerializer):
             "profile_image": obj.created_by.profile_image,
         }
 
+    @extend_schema_field(RewardClaimOutputSerializer(allow_null=True))
     def get_claim(self, obj: Reward) -> dict | None:
         claim = getattr(obj, "claim", None)
         if claim is None:
