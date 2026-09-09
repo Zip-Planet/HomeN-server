@@ -402,6 +402,7 @@
     "my_contribution_rate": 72,
     "mvp": {"uid": "…", "name": "투다리김치우동", "profile_image": 1, "point": 560, "completed_count": 7}
   },
+  "contribution": {"rate": 72, "week_start": "2026-01-26", "is_last_week": false},
   "next_week": {"week_start": "2026-02-02", "assignment_id": 8, "status": "proposed"},
   "items": [ "…분담안 항목 구조…" ]
 }
@@ -410,5 +411,8 @@
 - **진행률** = 완료 항목 수 / 전체 항목 수.
 - **기여도** = 내가 완료한 포인트 / 집 전체 완료 포인트 (배정 담당자가 아니라 **실제 완료자** 기준).
 - **MVP** = 완료 포인트 최고 구성원 (동점이면 완료 건수 우선).
+- **리포트 카드 기여도(`contribution`)**: 이번 주 집 전체 완료 포인트가 0 이면 **지난주 기여도**로 대체한다
+  (`is_last_week: true` → 화면 `지난주 기여도 N%`). 지난주도 0 이면 `null` → 화면 `없음`.
+  다른 구성원은 완료했는데 내 완료가 0 이면 대체하지 않고 `0%` 다.
 - `next_week.status` 가 null 이면 화면은 `생성 필요` + 레드닷으로 표시한다.
 - 404: 속한 집 없음.

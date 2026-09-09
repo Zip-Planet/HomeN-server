@@ -849,6 +849,13 @@ class TestHomeDashboard:
         assert dashboard["this_week"]["mvp"]["name"] == admin.name
         assert dashboard["this_week"]["mvp"]["point"] == 120
         assert dashboard["next_week"]["status"] is None
+        # 이번 주 완료 포인트가 있으므로 리포트 카드 기여도는 이번 주 값
+        assert dashboard["contribution"] == {
+            "rate": 100,
+            "week_start": week_start_of(today),
+            "is_last_week": False,
+        }
+        assert "total_points" not in dashboard["this_week"]
 
     def test_분담안이_없으면_0값_요약(self):
         from apps.homes.selectors import get_home_dashboard
@@ -861,6 +868,55 @@ class TestHomeDashboard:
         assert dashboard["this_week"]["progress_rate"] == 0
         assert dashboard["this_week"]["mvp"] is None
         assert dashboard["home"]["member_count"] == 1
+        # 이번 주·지난주 모두 완료 포인트 없음 → 기여도 "없음"
+        assert dashboard["contribution"] is None
+
+    def test_이번주_완료_없으면_지난주_기여도로_대체(self):
+        from apps.homes.selectors import get_home_dashboard
+        from apps.homes.tests.factories import ChoreCompletionFactory
+
+        home, admin = _make_home_with_admin()
+        today = timezone.localdate()
+        last_week_day = today - timedelta(days=7)
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, difficulty=Chore.Difficulty.MEDIUM, repeat_days=[today.weekday()])
+        # 지난주 분담안 + 완료 이력 1건, 이번 주 분담안은 있지만 완료 0건
+        last_assignment = _confirm_this_week(home, admin, today=last_week_day)
+        _confirm_this_week(home, admin, today=today)
+        item = last_assignment.items.first()
+        ChoreCompletionFactory(home_chore=item.home_chore, completed_by=admin, date=last_week_day)
+
+        dashboard = get_home_dashboard(user=admin, today=today)
+
+        assert dashboard["this_week"]["completed_count"] == 0
+        assert dashboard["this_week"]["my_contribution_rate"] == 0
+        assert dashboard["contribution"] == {
+            "rate": 100,
+            "week_start": week_start_of(last_week_day),
+            "is_last_week": True,
+        }
+
+    def test_다른_구성원만_완료하면_내_기여도는_0퍼센트로_대체_안_함(self):
+        from apps.homes.selectors import get_home_dashboard
+        from apps.homes.tests.factories import ChoreCompletionFactory
+
+        home, admin = _make_home_with_admin()
+        member = UserFactory()
+        HomeMemberFactory(home=home, user=member, role=HomeMember.Role.MEMBER)
+        today = timezone.localdate()
+        for name in ("분리수거", "설거지", "빨래"):
+            _add_chore(home, name=name, difficulty=Chore.Difficulty.MEDIUM, repeat_days=[today.weekday()])
+        assignment = _confirm_this_week(home, admin, today=today)
+        member_item = next(i for i in assignment.items.all() if i.assignee_id == member.id)
+        ChoreCompletionFactory(home_chore=member_item.home_chore, completed_by=member, date=today)
+
+        dashboard = get_home_dashboard(user=admin, today=today)
+
+        assert dashboard["contribution"] == {
+            "rate": 0,
+            "week_start": week_start_of(today),
+            "is_last_week": False,
+        }
 
     def test_집이_없으면_None(self):
         from apps.homes.selectors import get_home_dashboard

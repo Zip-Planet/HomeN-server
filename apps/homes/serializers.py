@@ -1120,11 +1120,25 @@ class DashboardNextWeekSerializer(serializers.Serializer):
     )
 
 
+class DashboardContributionSerializer(serializers.Serializer):
+    """리포트 카드 기여도 — 이번 주 완료 포인트가 없으면 지난주로 대체."""
+
+    rate = serializers.IntegerField(help_text="기여도 % (내 완료 포인트 / 집 전체 완료 포인트, 반올림).")
+    week_start = serializers.DateField(help_text="기여도 기준 주차의 월요일 날짜.")
+    is_last_week = serializers.BooleanField(
+        help_text="true 면 지난주 기여도 (이번 주 완료 포인트 없음). 화면에 '지난주 기여도' 로 표시.",
+    )
+
+
 class HomeDashboardOutputSerializer(serializers.Serializer):
     """홈 대시보드(T1_HomeDashboard) 응답."""
 
     home = DashboardHomeSerializer(help_text="집 정보.")
     this_week = DashboardThisWeekSerializer(help_text="이번 주 진행 요약.")
+    contribution = DashboardContributionSerializer(
+        allow_null=True,
+        help_text="리포트 카드 기여도. 이번 주 집 전체 완료 포인트가 0 이면 지난주 기여도, 둘 다 0 이면 null('없음').",
+    )
     next_week = DashboardNextWeekSerializer(help_text="다음 주 분담안 상태.")
     items = AssignmentItemOutputSerializer(
         many=True,

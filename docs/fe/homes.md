@@ -307,6 +307,7 @@ MVP·다음 주 분담안 상태·이번 주 항목 목록을 함께 반환한�
 | `this_week.progress_rate` | integer | 진행률 % (완료/전체, 반올림) |
 | `this_week.my_contribution_rate` | integer | 내 기여도 % (내 완료 포인트/집 전체 완료 포인트) |
 | `this_week.mvp` | object\|null | `{uid, name, profile_image, point, completed_count}`. 완료 이력 없으면 null |
+| `contribution` | object\|null | 리포트 카드 기여도 `{rate, week_start, is_last_week}`. 이번 주 완료 포인트 0 이면 지난주 값(`is_last_week: true`), 둘 다 0 이면 null(`없음`) |
 | `next_week.week_start` | date | 다음 주 월요일 |
 | `next_week.assignment_id` | integer\|null | 다음 주 분담안 PK. 없으면 null |
 | `next_week.status` | string\|null | `proposed`/`confirmed`. null 이면 화면에 '생성 필요' + 레드닷 |
@@ -328,6 +329,7 @@ MVP·다음 주 분담안 상태·이번 주 항목 목록을 함께 반환한�
     "my_contribution_rate": 72,
     "mvp": {"uid": "…", "name": "투다리김치우동", "profile_image": 1, "point": 560, "completed_count": 7}
   },
+  "contribution": {"rate": 72, "week_start": "2026-01-26", "is_last_week": false},
   "next_week": {"week_start": "2026-02-02", "assignment_id": 8, "status": "proposed"},
   "items": []
 }
@@ -336,6 +338,9 @@ MVP·다음 주 분담안 상태·이번 주 항목 목록을 함께 반환한�
 - **진행률** = 완료 항목 수 / 전체 항목 수.
 - **기여도** = 내가 완료한 포인트 / 집 전체 완료 포인트 (배정 담당자가 아닌 **실제 완료자** 기준).
 - **MVP** = 완료 포인트 최고 구성원 (동점이면 완료 건수 우선).
+- **리포트 카드 기여도(`contribution`)**: 이번 주 집 전체 완료 포인트가 0 이면 **지난주 기여도**로 대체한다
+  (`is_last_week: true` → 화면 `지난주 기여도 N%`). 지난주도 0 이면 `null` → 화면 `없음`.
+  다른 구성원은 완료했는데 내 완료가 0 이면 대체하지 않고 `0%` 다.
 
 ### 에러
 | status | code | 의미 |
