@@ -325,7 +325,8 @@ def summarize_week_assignment(
 
     Returns:
         `{week_start, status, total_count, completed_count, progress_rate,
-        my_contribution_rate, mvp}` 딕셔너리.
+        my_contribution_rate, total_points, mvp}` 딕셔너리.
+        `total_points` 는 집 전체 완료 포인트 합 (기여도 "없음" 판정용).
     """
     empty = {
         "week_start": None,
@@ -334,6 +335,7 @@ def summarize_week_assignment(
         "completed_count": 0,
         "progress_rate": 0,
         "my_contribution_rate": 0,
+        "total_points": 0,
         "mvp": None,
     }
     if assignment is None:
@@ -376,8 +378,41 @@ def summarize_week_assignment(
         "completed_count": completed_count,
         "progress_rate": _percent(completed_count, len(items)),
         "my_contribution_rate": _percent(points_by_user.get(user.id, 0), total_points),
+        "total_points": total_points,
         "mvp": mvp,
     }
+
+
+def _dashboard_contribution(
+    *, home: Home, user: User, this_summary: dict, this_week_start: date
+) -> dict | None:
+    """리포트 카드 기여도를 계산합니다 (이번 주 → 지난주 대체 → None).
+
+    Args:
+        home: 대상 Home.
+        user: 기여도 계산 기준 유저.
+        this_summary: `summarize_week_assignment` 로 만든 이번 주 요약.
+        this_week_start: 이번 주 월요일 날짜.
+
+    Returns:
+        `{rate, week_start, is_last_week}` 또는 두 주차 모두 완료 포인트가 없으면 None.
+    """
+    if this_summary["total_points"] > 0:
+        return {
+            "rate": this_summary["my_contribution_rate"],
+            "week_start": this_week_start,
+            "is_last_week": False,
+        }
+
+    last_week_start = this_week_start - timedelta(days=7)
+    last_summary = summarize_week_assignment(get_week_assignment(home, last_week_start), user=user)
+    if last_summary["total_points"] > 0:
+        return {
+            "rate": last_summary["my_contribution_rate"],
+            "week_start": last_week_start,
+            "is_last_week": True,
+        }
+    return None
 
 
 def get_home_dashboard(*, user: User, today: date | None = None) -> dict | None:
@@ -385,6 +420,10 @@ def get_home_dashboard(*, user: User, today: date | None = None) -> dict | None:
 
     화면 구성: 이번 주 진행률 / 기여도 / 우리집 MVP / 다음 주 분담안 상태 라벨 /
     이번 주 항목 목록(멤버 필터 탭).
+
+    리포트 카드 기여도(`contribution`)는 이번 주 집 전체 완료 포인트가 0 이면
+    지난주 기여도로 대체하고(`is_last_week: True`), 지난주도 0 이면 None 이다
+    (화면 "없음").
 
     Args:
         user: 조회 유저.
@@ -405,6 +444,12 @@ def get_home_dashboard(*, user: User, today: date | None = None) -> dict | None:
     this_week = get_week_assignment(home, this_week_start)
     next_week = WeeklyAssignment.objects.filter(home=home, week_start=next_week_start).first()
 
+    this_summary = summarize_week_assignment(this_week, user=user)
+    contribution = _dashboard_contribution(
+        home=home, user=user, this_summary=this_summary, this_week_start=this_week_start
+    )
+    this_summary.pop("total_points")
+
     return {
         "home": {
             "id": home.id,
@@ -413,10 +458,11 @@ def get_home_dashboard(*, user: User, today: date | None = None) -> dict | None:
             "member_count": HomeMember.objects.filter(home=home).count(),
         },
         "this_week": {
-            **summarize_week_assignment(this_week, user=user),
+            **this_summary,
             "week_start": this_week_start,
             "assignment_id": this_week.id if this_week else None,
         },
+        "contribution": contribution,
         "next_week": {
             "week_start": next_week_start,
             "assignment_id": next_week.id if next_week else None,

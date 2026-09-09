@@ -1810,6 +1810,8 @@ class TestHomeDashboardView:
         assert res.data["this_week"]["progress_rate"] == 33
         assert res.data["this_week"]["my_contribution_rate"] == 100
         assert res.data["this_week"]["mvp"]["point"] == 120
+        assert res.data["contribution"]["rate"] == 100
+        assert res.data["contribution"]["is_last_week"] is False
         assert res.data["next_week"]["status"] is None
         assert len(res.data["items"]) == 3
 
