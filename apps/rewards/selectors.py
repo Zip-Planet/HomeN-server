@@ -5,11 +5,12 @@
 합) 를 뺀 값이다. 완료를 취소하면 자동으로 잔액도 줄어들도록 파생값으로 둔다.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.db.models import QuerySet, Sum
 
 from apps.homes.models import AssignmentItem, ChoreCompletion, Home, HomeMember
+from apps.homes.selectors import get_week_assignment, get_week_completions
 from apps.rewards.models import Reward, RewardClaim
 from apps.users.models import User
 
@@ -39,6 +40,33 @@ def get_earned_points(*, user: User) -> int:
         for item in items
     }
     return sum(point_by_key.get(key, 0) for key in completions)
+
+
+def get_week_earned_points(*, home: Home, user: User, week_start: date) -> int:
+    """유저가 특정 주차 분담안으로 얻은 포인트 합을 반환합니다 (이번 주 한정).
+
+    `get_earned_points` 가 누적값인 것과 달리 `week_start` 주차의 분담안 항목 중
+    유저가 **실제 완료자**인 항목의 스냅샷 포인트만 합산한다. 분담안이 없으면 0.
+
+    Args:
+        home: 대상 집.
+        user: 대상 유저.
+        week_start: 주차의 월요일 날짜.
+
+    Returns:
+        해당 주차 획득 포인트.
+    """
+    assignment = get_week_assignment(home, week_start)
+    if assignment is None:
+        return 0
+
+    completions = get_week_completions(assignment)
+    total = 0
+    for item in assignment.items.all():
+        completion = completions.get((item.home_chore_id, week_start + timedelta(days=item.weekday)))
+        if completion is not None and completion.completed_by_id == user.id:
+            total += item.point
+    return total
 
 
 def get_spent_points(*, user: User) -> int:

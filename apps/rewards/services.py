@@ -11,7 +11,7 @@ from django.db import transaction
 
 from apps.homes.selectors import get_user_membership
 from apps.rewards.models import Reward, RewardClaim
-from apps.rewards.selectors import get_point_balance
+from apps.rewards.selectors import get_point_balance, get_week_earned_points
 from apps.users.models import User
 
 
@@ -175,14 +175,25 @@ def _announce_claim(claim: RewardClaim) -> None:
     from apps.notifications.services import notify_home
 
     reward = claim.reward
+    claimer = claim.claimed_by
+    week_start = week_start_of(timezone.localdate())
     publish_bot_card(
         home=reward.home,
         kind=BotCardKind.REWARD_ACHIEVED,
-        week_start=week_start_of(timezone.localdate()),
+        week_start=week_start,
         payload={
             "reward_name": reward.name,
             "goal_point": claim.claimed_point,
-            "claimed_by": claim.claimed_by.name if claim.claimed_by else "",
+            "claimed_by": (
+                {"uid": str(claimer.uid), "name": claimer.name, "profile_image": claimer.profile_image}
+                if claimer
+                else None
+            ),
+            "claimed_by_point": (
+                get_week_earned_points(home=reward.home, user=claimer, week_start=week_start)
+                if claimer
+                else 0
+            ),
         },
     )
     notify_home(

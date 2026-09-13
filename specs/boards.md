@@ -89,7 +89,10 @@
 | 분담안 생성 | `assignment_created` — 주차 + 총 집안일 수 |
 | 분담안 확정 | `assignment_confirmed` — 주차 + 총 집안일 수 |
 | 주간 리포트 생성 (일 21:00) | `weekly_report` — 진행률 + MVP |
-| 리워드 수령 | `reward_achieved` — 수령자 + 리워드명 + 포인트 |
+| 리워드 수령 | `reward_achieved` — 수령자 `{uid, name, profile_image}` + 이번 주 획득 포인트 + 리워드명 + 목표 포인트 |
+
+`reward_achieved` payload: `{"reward_name", "goal_point", "claimed_by": {uid, name, profile_image}, "claimed_by_point"}`.
+`claimed_by_point` 는 수령자가 카드 주차(`week_start`) 분담안으로 얻은 포인트 합(완료자 기준)이다.
 
 ---
 
