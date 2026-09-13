@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 import pytest
 from django.utils import timezone
 
+from apps.boards.models import BotCard, BotCardKind
 from apps.homes.models import Chore, HomeMember
 from apps.homes.services import (
     _generate_assignment_for_home,
@@ -10,7 +13,7 @@ from apps.homes.services import (
 )
 from apps.homes.tests.factories import ChoreFactory, HomeChoreFactory, HomeFactory, HomeMemberFactory
 from apps.rewards.models import RewardClaim
-from apps.rewards.selectors import get_member_progress, get_point_balance
+from apps.rewards.selectors import get_member_progress, get_point_balance, get_week_earned_points
 from apps.rewards.services import (
     NotEnoughPointsError,
     RewardAlreadyClaimedError,
@@ -96,6 +99,25 @@ class TestClaimReward:
         assert claim.claimed_point == 360
         assert RewardClaim.objects.filter(reward=reward).count() == 1
 
+    def test_수령_시_보드_카드에_수령자와_이번주_포인트가_담긴다(self):
+        home, admin = _home_with_points(complete=3)  # 360P
+        reward = RewardFactory(home=home, name="치킨", goal_point=360, created_by=admin)
+
+        claim_reward(user=admin, reward_id=reward.id)
+
+        card = BotCard.objects.get(home=home, kind=BotCardKind.REWARD_ACHIEVED)
+        assert card.week_start == week_start_of(timezone.localdate())
+        assert card.payload == {
+            "reward_name": "치킨",
+            "goal_point": 360,
+            "claimed_by": {
+                "uid": str(admin.uid),
+                "name": admin.name,
+                "profile_image": admin.profile_image,
+            },
+            "claimed_by_point": 360,
+        }
+
     def test_잔액이_부족하면_거부된다(self):
         home, admin = _home_with_points(complete=1)  # 120P
         reward = RewardFactory(home=home, goal_point=1000, created_by=admin)
@@ -178,3 +200,25 @@ class TestMemberProgress:
         rows = get_member_progress(reward=reward)
 
         assert rows[0]["achievement_rate"] == 100
+
+
+class TestGetWeekEarnedPoints:
+    def test_이번주_완료_포인트만_합산한다(self):
+        home, admin = _home_with_points(complete=2)  # 240P
+        week_start = week_start_of(timezone.localdate())
+
+        assert get_week_earned_points(home=home, user=admin, week_start=week_start) == 240
+
+    def test_분담안이_없는_주차는_0(self):
+        home, admin = _home_with_points(complete=2)
+        last_week = week_start_of(timezone.localdate()) - timedelta(days=7)
+
+        assert get_week_earned_points(home=home, user=admin, week_start=last_week) == 0
+
+    def test_다른_구성원의_완료는_제외한다(self):
+        home, admin = _home_with_points(complete=2)
+        other = UserFactory()
+        HomeMemberFactory(home=home, user=other)
+        week_start = week_start_of(timezone.localdate())
+
+        assert get_week_earned_points(home=home, user=other, week_start=week_start) == 0
