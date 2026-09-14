@@ -1,6 +1,8 @@
 from datetime import timedelta
+from io import StringIO
 
 import pytest
+from django.core.management import call_command
 from django.utils import timezone
 
 from apps.boards.models import BotCard, BotCardKind
@@ -18,6 +20,7 @@ from apps.rewards.services import (
     NotEnoughPointsError,
     RewardAlreadyClaimedError,
     RewardNotFoundError,
+    backfill_reward_achieved_cards,
     claim_reward,
     create_reward,
     delete_reward,
@@ -222,3 +225,46 @@ class TestGetWeekEarnedPoints:
         week_start = week_start_of(timezone.localdate())
 
         assert get_week_earned_points(home=home, user=other, week_start=week_start) == 0
+
+
+class TestBackfillRewardAchievedCards:
+    def _claim_with_legacy_card(self):
+        home, admin = _home_with_points(complete=3)  # 360P
+        reward = RewardFactory(home=home, name="테스트", goal_point=360, created_by=admin)
+        claim_reward(user=admin, reward_id=reward.id)
+
+        card = BotCard.objects.get(home=home, kind=BotCardKind.REWARD_ACHIEVED)
+        card.payload = {"claimed_by": admin.name, "goal_point": 360, "reward_name": "테스트"}
+        card.save(update_fields=["payload"])
+        return home, admin, card
+
+    def test_구버전_카드에_수령자_객체와_포인트를_채운다(self):
+        home, admin, card = self._claim_with_legacy_card()
+
+        assert backfill_reward_achieved_cards() == 1
+
+        card.refresh_from_db()
+        assert card.payload == {
+            "reward_name": "테스트",
+            "goal_point": 360,
+            "claimed_by": {
+                "uid": str(admin.uid),
+                "name": admin.name,
+                "profile_image": admin.profile_image,
+            },
+            "claimed_by_point": 360,
+        }
+
+    def test_이미_현재_형식이면_건너뛴다(self):
+        self._claim_with_legacy_card()
+        backfill_reward_achieved_cards()
+
+        assert backfill_reward_achieved_cards() == 0
+
+    def test_커맨드_실행(self):
+        self._claim_with_legacy_card()
+        out = StringIO()
+
+        call_command("backfill_reward_achieved_cards", stdout=out)
+
+        assert "리워드 달성 카드 백필 완료 — 1건" in out.getvalue()
