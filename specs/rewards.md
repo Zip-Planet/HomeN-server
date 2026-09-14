@@ -68,6 +68,8 @@
 - 수령 시 보드에 `리워드 달성` 봇 카드가 발행되고, 전 구성원에게 리워드 알림이 간다.
   카드 payload 에는 수령자(`{uid, name, profile_image}`)와 수령자가 이번 주 분담안으로 얻은
   포인트(`claimed_by_point`)를 스냅샷으로 담는다.
+  `claimed_by` 가 이름 문자열이던 구버전 카드는 `manage.py backfill_reward_achieved_cards` 로
+  1회 갱신한다 (이미 현재 형식인 카드는 건너뜀 — 멱등).
 
 ---
 

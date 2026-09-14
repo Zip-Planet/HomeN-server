@@ -7,7 +7,10 @@
 - 수령 시점의 목표 포인트를 스냅샷(`claimed_point`)으로 남겨 이후 수정에 흔들리지 않게 한다.
 """
 
+from datetime import date
+
 from django.db import transaction
+from django.utils import timezone
 
 from apps.homes.selectors import get_user_membership
 from apps.rewards.models import Reward, RewardClaim
@@ -164,10 +167,28 @@ def claim_reward(*, user: User, reward_id: int) -> RewardClaim:
     return claim
 
 
+def _reward_achieved_payload(claim: RewardClaim, week_start: date) -> dict:
+    """`reward_achieved` 봇 카드 payload 스냅샷을 조립합니다."""
+    reward = claim.reward
+    claimer = claim.claimed_by
+    return {
+        "reward_name": reward.name,
+        "goal_point": claim.claimed_point,
+        "claimed_by": (
+            {"uid": str(claimer.uid), "name": claimer.name, "profile_image": claimer.profile_image}
+            if claimer
+            else None
+        ),
+        "claimed_by_point": (
+            get_week_earned_points(home=reward.home, user=claimer, week_start=week_start)
+            if claimer
+            else 0
+        ),
+    }
+
+
 def _announce_claim(claim: RewardClaim) -> None:
     """리워드 달성을 보드 봇 카드와 알림으로 알립니다."""
-    from django.utils import timezone
-
     from apps.boards.models import BotCardKind
     from apps.boards.services import publish_bot_card
     from apps.homes.services import week_start_of
@@ -175,26 +196,12 @@ def _announce_claim(claim: RewardClaim) -> None:
     from apps.notifications.services import notify_home
 
     reward = claim.reward
-    claimer = claim.claimed_by
     week_start = week_start_of(timezone.localdate())
     publish_bot_card(
         home=reward.home,
         kind=BotCardKind.REWARD_ACHIEVED,
         week_start=week_start,
-        payload={
-            "reward_name": reward.name,
-            "goal_point": claim.claimed_point,
-            "claimed_by": (
-                {"uid": str(claimer.uid), "name": claimer.name, "profile_image": claimer.profile_image}
-                if claimer
-                else None
-            ),
-            "claimed_by_point": (
-                get_week_earned_points(home=reward.home, user=claimer, week_start=week_start)
-                if claimer
-                else 0
-            ),
-        },
+        payload=_reward_achieved_payload(claim, week_start),
     )
     notify_home(
         home=reward.home,
@@ -203,3 +210,31 @@ def _announce_claim(claim: RewardClaim) -> None:
         body=f"구성원이 {reward.name} 리워드를 받았어요",
         deep_link=f"reward:{reward.id}",
     )
+
+
+def backfill_reward_achieved_cards() -> int:
+    """구버전 형식(`claimed_by` 문자열)의 리워드 달성 카드를 현재 payload 로 갱신합니다.
+
+    `BotCard.payload` 는 발행 시점 스냅샷이라 코드가 바뀌어도 기존 카드는 그대로다.
+    수령 이력(`RewardClaim`)을 수령 일시 기준 주차로 카드에 대응시켜 다시 조립한다.
+    이미 현재 형식인 카드는 건너뛰므로 여러 번 실행해도 안전하다.
+
+    Returns:
+        갱신한 카드 수.
+    """
+    from apps.boards.models import BotCard, BotCardKind
+    from apps.homes.services import week_start_of
+
+    updated = 0
+    claims = RewardClaim.objects.select_related("reward__home", "claimed_by").order_by("claimed_at", "id")
+    for claim in claims:
+        week_start = week_start_of(timezone.localtime(claim.claimed_at).date())
+        card = BotCard.objects.filter(
+            home=claim.reward.home, kind=BotCardKind.REWARD_ACHIEVED, week_start=week_start
+        ).first()
+        if card is None or isinstance(card.payload.get("claimed_by"), dict):
+            continue
+        card.payload = _reward_achieved_payload(claim, week_start)
+        card.save(update_fields=["payload"])
+        updated += 1
+    return updated
