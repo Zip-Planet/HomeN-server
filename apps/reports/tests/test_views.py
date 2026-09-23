@@ -3,7 +3,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.homes.services import week_start_of
+from apps.homes.models import HomeMember
+from apps.homes.services import complete_chore, week_start_of
+from apps.homes.tests.factories import HomeFactory, HomeMemberFactory
 from apps.reports.services import generate_report
 from apps.reports.tests.test_services import _confirmed_home
 from apps.users.tests.factories import UserFactory
@@ -23,19 +25,33 @@ def auth_client(user) -> APIClient:
 class TestWeeklyReportView:
     def test_리포트_조회_200(self):
         home, admin, _ = _confirmed_home(complete=2)
-        generate_report(home=home, week_start=week_start_of(timezone.localdate()))
 
         res = auth_client(admin).get(_URL)
 
         assert res.status_code == 200
+        assert "id" not in res.data
+        assert res.data["generated_at"] is not None
         assert res.data["completed_count"] == 2
         assert res.data["progress_rate"] == 67
         assert res.data["mvp"]["point"] == 240
         assert len(res.data["member_stats"]) == 1
         assert res.data["most_done"]["count"] == 1
 
-    def test_리포트가_없으면_404(self):
-        _home, admin, _ = _confirmed_home(complete=1)
+    def test_스냅샷_이후_완료도_조회_시점에_반영된다(self):
+        home, admin, assignment = _confirmed_home(complete=1)
+        generate_report(home=home, week_start=week_start_of(timezone.localdate()))
+        complete_chore(user=admin, home_chore_id=list(assignment.items.all())[1].home_chore_id)
+
+        res = auth_client(admin).get(_URL)
+
+        assert res.status_code == 200
+        assert res.data["completed_count"] == 2
+        assert res.data["progress_rate"] == 67
+
+    def test_분담안이_없으면_404(self):
+        admin = UserFactory()
+        home = HomeFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
 
         assert auth_client(admin).get(_URL).status_code == 404
 

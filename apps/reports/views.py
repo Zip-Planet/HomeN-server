@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from apps.homes.selectors import get_user_home
 from apps.homes.services import week_start_of
-from apps.reports.models import WeeklyReport
+from apps.reports.selectors import get_weekly_report
 from apps.reports.serializers import WeeklyReportOutputSerializer, WeeklyReportQuerySerializer
 from common.error_responses import ErrorResponseSerializer, error_example
 
@@ -22,10 +22,10 @@ class WeeklyReportView(APIView):
         summary="주간 리포트 조회",
         description=(
             "## 🔥 설명\n"
-            "주간 리포트(R1_WeeklyReport)를 조회한다. 리포트는 **매주 일요일 21:00** 에 "
-            "`generate_weekly_reports` 커맨드가 자동 생성한 스냅샷이며, 이후 집안일이 수정·삭제돼도 "
-            "지난 리포트 값은 변하지 않는다.\n\n"
-            "아직 생성되지 않았거나 그 주차에 분담안이 없으면 404 — 화면은 "
+            "주간 리포트(R1_WeeklyReport)를 조회한다. **조회할 때마다 그 시점의 완료 현황으로 "
+            "실시간 집계**하므로 주중에도 지금 기준의 \"이번 주 진행률\" 이 내려온다 "
+            "(`generated_at` = 집계 시각).\n\n"
+            "그 주차 분담안(`confirmed`/`expired`)이 없으면 404 — 화면은 "
             "\"집안일을 완료하면 리포트가 도착해요\" 빈 상태를 노출한다.\n\n"
             "## 🔐 인증\n"
             "Bearer access 토큰 필수. 모든 구성원 조회 가능.\n\n"
@@ -40,11 +40,12 @@ class WeeklyReportView(APIView):
             "| body | `completed_count` / `total_count` | integer | 완료 / 전체 항목 수 |\n"
             "| body | `mvp` | object | 우리집 MVP. 완료 이력이 없으면 null |\n"
             "| body | `member_stats[]` | array | 구성원별 `{assigned_count, completed_count, point}` |\n"
-            "| body | `most_done` / `most_missed` | object | 하이라이트 `{name, count}` |\n\n"
+            "| body | `most_done` / `most_missed` | object | 하이라이트 `{name, count}` |\n"
+            "| body | `generated_at` | datetime | 집계 시각 (조회 시점) |\n\n"
             "## ❌ 에러\n"
             "| status | code | 의미 |\n"
             "| --- | --- | --- |\n"
-            "| 404 | `not_found` | 속한 집이 없거나 해당 주차 리포트가 없음 |\n"
+            "| 404 | `not_found` | 속한 집이 없거나 해당 주차에 분담안이 없음 |\n"
         ),
         parameters=[
             OpenApiParameter(
@@ -58,7 +59,7 @@ class WeeklyReportView(APIView):
             200: WeeklyReportOutputSerializer,
             400: OpenApiResponse(response=ErrorResponseSerializer, description="week_start 형식 오류."),
             401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
-            404: OpenApiResponse(response=ErrorResponseSerializer, description="집 또는 리포트 미존재."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="집 또는 해당 주차 분담안 미존재."),
         },
         examples=[
             error_example(
@@ -78,11 +79,7 @@ class WeeklyReportView(APIView):
             raise NotFound("속한 집이 없습니다.")
 
         week_start = query.validated_data.get("week_start") or week_start_of(timezone.localdate())
-        report = (
-            WeeklyReport.objects.select_related("mvp_user")
-            .filter(home=home, week_start=week_start)
-            .first()
-        )
+        report = get_weekly_report(home=home, week_start=week_start)
         if report is None:
             raise NotFound("해당 주차의 리포트가 없습니다.")
 

@@ -42,7 +42,6 @@ class WeeklyReportOutputSerializer(serializers.ModelSerializer):
     class Meta:
         model = WeeklyReport
         fields = [
-            "id",
             "week_start",
             "total_count",
             "completed_count",
@@ -54,12 +53,11 @@ class WeeklyReportOutputSerializer(serializers.ModelSerializer):
             "generated_at",
         ]
         extra_kwargs = {
-            "id": {"help_text": "리포트 PK."},
             "week_start": {"help_text": "대상 주차의 월요일 날짜."},
             "total_count": {"help_text": "그 주 전체 항목 수."},
             "completed_count": {"help_text": "완료 항목 수."},
             "progress_rate": {"help_text": "진행률 % (반올림)."},
-            "generated_at": {"help_text": "리포트 생성 시각."},
+            "generated_at": {"help_text": "집계 시각 (조회 시점)."},
         }
 
     def get_mvp(self, obj: WeeklyReport) -> dict | None:
