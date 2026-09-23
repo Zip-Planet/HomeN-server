@@ -8,9 +8,12 @@
 
 ## 1. 개요
 
-주간 리포트는 "그 주에 무슨 일이 있었나"를 남기는 **스냅샷 기록**이다. **매주 일요일 21:00**
-(`Asia/Seoul`) 에 `generate_weekly_reports` 커맨드가 그 주차 분담안의 수행 결과를 굳혀 저장한다.
-스냅샷이므로 리포트 생성 이후 집안일이 수정·삭제돼도 지난 리포트 수치는 변하지 않는다.
+주간 리포트는 **조회할 때마다 그 시점의 완료 현황으로 실시간 집계**된다. 주중에 열어도
+지금 기준의 "이번 주 진행률" 이 내려오고, 완료가 추가되면 다음 조회에 바로 반영된다.
+`generated_at` 은 집계 시각(= 응답 시각)이다.
+
+매주 일요일 21:00 (`Asia/Seoul`) 에는 서버가 같은 집계로 보드에 `주간 리포트` 봇 카드를 발행하고
+전 구성원에게 리포트 알림을 보낸다.
 
 리포트가 담는 것:
 
@@ -19,9 +22,8 @@
 - **구성원별 달성 현황** (`member_stats[]` — 배정·완료·포인트)
 - **하이라이트** — 가장 많이 한 집안일(`most_done`) / 미완료가 많은 집안일(`most_missed`)
 
-빈 상태 처리: 아직 리포트가 생성되지 않았거나 그 주차에 분담안이 없으면 **404** 가 내려온다.
-화면은 "집안일을 완료하면 리포트가 도착해요" (또는 "리포트는 매주 일요일 저녁 9시에
-자동으로 생성돼요") 빈 상태를 노출한다.
+빈 상태 처리: 그 주차에 분담안(`confirmed`/`expired`)이 없으면 **404** 가 내려온다.
+화면은 "집안일을 완료하면 리포트가 도착해요" 빈 상태를 노출한다.
 
 ### 집계 규칙 (참고)
 
@@ -65,7 +67,6 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `id` | integer | 리포트 PK |
 | `week_start` | date | 대상 주차의 월요일 날짜 |
 | `total_count` | integer | 그 주 전체 항목 수 |
 | `completed_count` | integer | 완료 항목 수 |
@@ -74,14 +75,14 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 | `member_stats` | array | 구성원별 달성 현황 (포인트 내림차순) |
 | `most_done` | object \| null | 가장 많이 한 집안일 `{name, count}` |
 | `most_missed` | object \| null | 미완료가 많은 집안일 `{name, count}` |
-| `generated_at` | datetime | 리포트 생성 시각 |
+| `generated_at` | datetime | 집계 시각 (조회 시점) |
 
 ##### `mvp` 오브젝트
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `uid` | string \| null | MVP 유저 uid (탈퇴 시 `null`) |
-| `name` | string | MVP 닉네임 (생성 시점 **스냅샷** — 탈퇴해도 화면에 남김) |
+| `name` | string | MVP 닉네임 (조회 시점 값) |
 | `profile_image` | integer \| null | 프로필 이미지 enum (탈퇴 시 `null`) |
 | `point` | integer | MVP 가 완료로 획득한 포인트 합 |
 | `completed_count` | integer | MVP 완료 건수 |
@@ -91,7 +92,7 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
 | `uid` | string | 유저 uid |
-| `name` | string | 닉네임 (생성 시점 스냅샷) |
+| `name` | string | 닉네임 (조회 시점 값) |
 | `profile_image` | integer \| null | 프로필 이미지 enum |
 | `assigned_count` | integer | 배정된 항목 수 |
 | `completed_count` | integer | 완료한 항목 수 |
@@ -110,7 +111,6 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 
 ```json
 {
-  "id": 4,
   "week_start": "2026-01-26",
   "total_count": 25,
   "completed_count": 16,
@@ -134,7 +134,7 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
   ],
   "most_done": { "name": "설거지", "count": 6 },
   "most_missed": { "name": "화장실 청소", "count": 2 },
-  "generated_at": "2026-02-01T21:00:00+09:00"
+  "generated_at": "2026-01-28T14:03:12+09:00"
 }
 ```
 
@@ -162,7 +162,7 @@ curl -H "Authorization: Bearer <access>" \
 
 ## 4. FE 연동 팁 / 주의사항
 
-- **404 는 정상 흐름이다.** 리포트 미생성/분담안 없음을 의미하므로 에러 토스트가 아니라
+- **404 는 정상 흐름이다.** 그 주차에 분담안이 없음을 의미하므로 에러 토스트가 아니라
   빈 상태 화면("집안일을 완료하면 리포트가 도착해요")으로 처리한다.
 - **`week_start` 는 월요일만 허용.** 주차 이동 UI 에서 날짜를 계산할 때 항상 해당 주의
   월요일로 정규화해 보낸다. 월요일이 아니면 400 이다.
@@ -170,7 +170,7 @@ curl -H "Authorization: Bearer <access>" \
   `mvp = null`, 하이라이트도 `null` 이므로 각 카드에 null 가드를 둔다.
 - **`profile_image` 는 enum 정수.** MVP·구성원 통계 모두 이미지 URL 이 아니라 정수 enum 이므로
   FE 에서 이미지 매핑이 필요하다. 탈퇴 유저(MVP)의 `profile_image`·`uid` 는 `null` 일 수 있다.
-- **스냅샷 값이다.** `name`, `point`, `member_stats` 등은 리포트 생성 시점 값이다. 이후 집안일/닉네임이
-  바뀌어도 지난 리포트 수치는 변하지 않는다. 최신 값이 필요하면 원본 API 를 참조한다.
+- **실시간 값이다.** `name`, `point`, `member_stats` 등은 조회 시점 값이다. 집안일 완료·수정이
+  있으면 다음 조회에 바로 반영되므로, 화면 복귀 시 재조회하면 최신 상태가 된다.
 - **정렬 보장.** `member_stats[]` 는 **포인트 내림차순**으로 정렬되어 내려온다 (별도 정렬 불필요).
-- **생성 시점.** 리포트는 매주 일요일 21:00(KST) 에 자동 생성된다. 그 이전에 이번 주차를 조회하면 404 다.
+- **알림 시점.** 리포트 도착 알림·보드 봇 카드는 매주 일요일 21:00(KST) 에 발행된다. 조회 자체는 시점과 무관하다.

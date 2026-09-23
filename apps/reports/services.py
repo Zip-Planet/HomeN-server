@@ -1,8 +1,9 @@
 """주간 리포트 생성.
 
 매주 일요일 21:00(관리 커맨드 `generate_weekly_reports`)에 그 주차 분담안의
-수행 결과를 집계해 스냅샷으로 저장한다. 화면(R1_WeeklyReport)의 빈 상태 문구
-"리포트는 매주 일요일 저녁 9시에 자동으로 생성돼요" 가 이 스케줄이다.
+수행 결과를 집계해 스냅샷으로 저장하고 보드 봇 카드·알림을 발행한다. 조회 API 는
+스냅샷을 읽지 않고 `selectors.get_weekly_report` 가 같은 집계(`build_report_payload`)로
+조회 시점 값을 내려준다.
 """
 
 from datetime import date, timedelta
@@ -110,6 +111,24 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
     }
 
 
+def find_report_target(*, home: Home, week_start: date) -> WeeklyAssignment | None:
+    """리포트 집계 대상 분담안을 찾습니다 (`confirmed`/`expired` 만, 제안 상태 제외).
+
+    Args:
+        home: 대상 집.
+        week_start: 대상 주차의 월요일 날짜.
+
+    Returns:
+        items·assignee 가 prefetch 된 분담안, 없으면 None.
+    """
+    return (
+        WeeklyAssignment.objects.prefetch_related("items__assignee")
+        .filter(home=home, week_start=week_start)
+        .exclude(status=WeeklyAssignment.Status.PROPOSED)
+        .first()
+    )
+
+
 def generate_report(*, home: Home, week_start: date) -> WeeklyReport | None:
     """한 집·한 주차의 리포트를 생성(또는 갱신)합니다.
 
@@ -123,12 +142,7 @@ def generate_report(*, home: Home, week_start: date) -> WeeklyReport | None:
     Returns:
         생성/갱신된 WeeklyReport, 또는 분담안이 없으면 None.
     """
-    assignment = (
-        WeeklyAssignment.objects.prefetch_related("items__assignee")
-        .filter(home=home, week_start=week_start)
-        .exclude(status=WeeklyAssignment.Status.PROPOSED)
-        .first()
-    )
+    assignment = find_report_target(home=home, week_start=week_start)
     if assignment is None:
         return None
 
