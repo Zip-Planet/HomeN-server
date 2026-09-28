@@ -209,9 +209,11 @@ class TestHomeDetailView:
         assert len(members) == 2
         admin_data = next(m for m in members if m["role"] == HomeMember.Role.ADMIN)
         member_data = next(m for m in members if m["role"] == HomeMember.Role.MEMBER)
+        assert admin_data["uid"] == str(admin.uid)
         assert admin_data["name"] == "관리자"
         assert admin_data["profile_image"] == 1
         assert admin_data["role_label"] == "관리자"
+        assert member_data["uid"] == str(member.uid)
         assert member_data["name"] == "구성원"
         assert member_data["profile_image"] == 2
         assert member_data["role_label"] == "구성원"
@@ -262,7 +264,8 @@ class TestHomeInviteView:
     def test_초대코드_조회_성공(self):
         user = UserFactory()
         home = HomeFactory(status=Home.Status.ACTIVE, invite_code="ABC123")
-        HomeMemberFactory(home=home, user=UserFactory(), role=HomeMember.Role.ADMIN)
+        admin = UserFactory()
+        HomeMemberFactory(home=home, user=admin, role=HomeMember.Role.ADMIN)
         client = auth_client(user)
 
         res = client.get("/api/v1/homes/invite/ABC123/")
@@ -270,6 +273,7 @@ class TestHomeInviteView:
         assert res.status_code == 200
         assert res.data["invite_code"] == "ABC123"
         assert res.data["member_count"] == 1
+        assert res.data["members"][0]["uid"] == str(admin.uid)
 
     def test_소문자_초대코드로_조회_성공(self):
         user = UserFactory()

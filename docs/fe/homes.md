@@ -65,6 +65,7 @@ FE 는 `error.code` 로 분기하고, `error.message` 는 사용자 노출용 �
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
+| `uid` | string(uuid) | 유저 uid |
 | `name` | string | 닉네임 |
 | `profile_image` | integer\|null | 프로필 이미지 enum (미설정 시 null) |
 | `role` | integer | 1=관리자, 2=구성원 |
@@ -148,7 +149,7 @@ FE 는 `error.code` 로 분기하고, `error.message` 는 사용자 노출용 �
   "status": "active",
   "created_at": "2026-05-13T12:00:00Z",
   "members": [
-    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"}
+    {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"}
   ]
 }
 ```
@@ -185,8 +186,8 @@ FE 는 `error.code` 로 분기하고, `error.message` 는 사용자 노출용 �
   "status": "active",
   "created_at": "2026-05-13T12:00:00Z",
   "members": [
-    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
-    {"name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
+    {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
+    {"uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc", "name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
   ]
 }
 ```
@@ -827,8 +828,8 @@ C-3 응답의 단일 원소와 동일 (`updated_at` 갱신).
   "member_count": 2,
   "created_at": "2026-05-12T12:00:00Z",
   "members": [
-    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
-    {"name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
+    {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
+    {"uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc", "name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
   ]
 }
 ```
@@ -864,8 +865,8 @@ C-3 응답의 단일 원소와 동일 (`updated_at` 갱신).
   "status": "active",
   "created_at": "2026-05-12T12:00:00Z",
   "members": [
-    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
-    {"name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
+    {"uid": "8f3e2b1a-1234-4abc-9def-1234567890ab", "name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
+    {"uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc", "name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"}
   ]
 }
 ```

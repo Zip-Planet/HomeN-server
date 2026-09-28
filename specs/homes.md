@@ -250,12 +250,14 @@
   "created_at": "2026-04-02T00:00:00Z",
   "members": [
     {
+      "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
       "name": "홍길동",
       "profile_image": "http://example.com/media/profile_images/abc.png",
       "role": 1,
       "role_label": "관리자"
     },
     {
+      "uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc",
       "name": "김철수",
       "profile_image": null,
       "role": 2,
