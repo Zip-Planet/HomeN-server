@@ -210,6 +210,7 @@ class HomeMemberSerializer(serializers.ModelSerializer):
     재사용된다.
     """
 
+    uid = serializers.UUIDField(source="user.uid", help_text="구성원 유저 uid (UUID).")
     name = serializers.CharField(source="user.name", help_text="구성원 닉네임.")
     profile_image = serializers.IntegerField(
         source="user.profile_image",
@@ -220,7 +221,7 @@ class HomeMemberSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HomeMember
-        fields = ["name", "profile_image", "role", "role_label"]
+        fields = ["uid", "name", "profile_image", "role", "role_label"]
 
     def get_role_label(self, obj: HomeMember) -> str:
         return obj.get_role_display()
@@ -238,8 +239,20 @@ class HomeMemberSerializer(serializers.ModelSerializer):
                 "status": "active",
                 "created_at": "2026-05-12T12:00:00Z",
                 "members": [
-                    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
-                    {"name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"},
+                    {
+                        "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                        "name": "홍길동",
+                        "profile_image": 3,
+                        "role": 1,
+                        "role_label": "관리자",
+                    },
+                    {
+                        "uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc",
+                        "name": "김철수",
+                        "profile_image": 2,
+                        "role": 2,
+                        "role_label": "구성원",
+                    },
                 ],
             },
             response_only=True,
@@ -753,8 +766,20 @@ class HomeMembershipSerializer(serializers.Serializer):
                 "member_count": 2,
                 "created_at": "2026-05-12T12:00:00Z",
                 "members": [
-                    {"name": "홍길동", "profile_image": 3, "role": 1, "role_label": "관리자"},
-                    {"name": "김철수", "profile_image": 2, "role": 2, "role_label": "구성원"},
+                    {
+                        "uid": "8f3e2b1a-1234-4abc-9def-1234567890ab",
+                        "name": "홍길동",
+                        "profile_image": 3,
+                        "role": 1,
+                        "role_label": "관리자",
+                    },
+                    {
+                        "uid": "9a4f3c2b-2345-4bcd-8def-2345678901bc",
+                        "name": "김철수",
+                        "profile_image": 2,
+                        "role": 2,
+                        "role_label": "구성원",
+                    },
                 ],
             },
             response_only=True,
