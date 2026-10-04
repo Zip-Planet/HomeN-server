@@ -36,6 +36,7 @@ class TestWeeklyReportView:
         assert res.data["mvp"]["point"] == 240
         assert len(res.data["member_stats"]) == 1
         assert res.data["most_done"]["count"] == 1
+        assert res.data["most_done"]["home_chore_id"] is not None
 
     def test_스냅샷_이후_완료도_조회_시점에_반영된다(self):
         home, admin, assignment = _confirmed_home(complete=1)

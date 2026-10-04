@@ -28,7 +28,8 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
       화면이 `완료 · 7/7건` 처럼 둘 다 보여주기 때문이다.
     - 완료 포인트는 실제 완료자(`ChoreCompletion.completed_by`) 기준으로 합산한다
       (도움 카드로 담당자가 바뀔 수 있으므로 배정 담당자와 다를 수 있다).
-    - 하이라이트는 집안일명 기준 완료/미완료 횟수 최대값이다.
+    - 하이라이트는 집안일 기준 완료/미완료 횟수 최대값이다. 상세 이동용 `home_chore_id` 를
+      함께 담는다 (원본이 물리 삭제됐으면 null).
 
     Args:
         assignment: 대상 분담안 (items prefetch 가정).
@@ -44,8 +45,8 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
     points_by_user: dict[int, int] = {}
     user_by_id = {}
 
-    done_by_name: dict[str, int] = {}
-    missed_by_name: dict[str, int] = {}
+    done_by_chore: dict[tuple[int | None, str], int] = {}
+    missed_by_chore: dict[tuple[int | None, str], int] = {}
     completed_count = 0
 
     for item in items:
@@ -55,12 +56,13 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
 
         item_date = assignment.week_start + timedelta(days=item.weekday)
         completion = completions.get((item.home_chore_id, item_date))
+        chore_key = (item.home_chore_id, item.chore_name)
         if completion is None:
-            missed_by_name[item.chore_name] = missed_by_name.get(item.chore_name, 0) + 1
+            missed_by_chore[chore_key] = missed_by_chore.get(chore_key, 0) + 1
             continue
 
         completed_count += 1
-        done_by_name[item.chore_name] = done_by_name.get(item.chore_name, 0) + 1
+        done_by_chore[chore_key] = done_by_chore.get(chore_key, 0) + 1
 
         completer = completion.completed_by
         if completer is None:
@@ -91,11 +93,12 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
         top_id = max(points_by_user, key=lambda uid: (points_by_user[uid], completed_by_user[uid]))
         mvp_user = user_by_id[top_id]
 
-    def _top(counter: dict[str, int]) -> dict | None:
+    def _top(counter: dict[tuple[int | None, str], int]) -> dict | None:
         if not counter:
             return None
-        name = max(counter, key=lambda key: (counter[key], key))
-        return {"name": name, "count": counter[name]}
+        key = max(counter, key=lambda k: (counter[k], k[1]))
+        home_chore_id, name = key
+        return {"home_chore_id": home_chore_id, "name": name, "count": counter[key]}
 
     return {
         "total_count": len(items),
@@ -106,8 +109,8 @@ def build_report_payload(assignment: WeeklyAssignment) -> dict:
         "mvp_point": points_by_user.get(mvp_user.id, 0) if mvp_user else 0,
         "mvp_completed_count": completed_by_user.get(mvp_user.id, 0) if mvp_user else 0,
         "member_stats": member_stats,
-        "most_done": _top(done_by_name),
-        "most_missed": _top(missed_by_name),
+        "most_done": _top(done_by_chore),
+        "most_missed": _top(missed_by_chore),
     }
 
 

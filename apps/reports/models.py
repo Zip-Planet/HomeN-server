@@ -22,7 +22,7 @@ class WeeklyReport(models.Model):
         mvp_point / mvp_completed_count: MVP 의 완료 포인트·건수 스냅샷.
         mvp_name: MVP 닉네임 스냅샷 (탈퇴해도 화면에 남기기 위해).
         member_stats: 구성원별 달성 현황 목록 (JSON 스냅샷).
-        most_done / most_missed: 하이라이트 `{name, count}` (없으면 null).
+        most_done / most_missed: 하이라이트 `{home_chore_id, name, count}` (없으면 null).
         generated_at: 리포트 생성 시각.
     """
 
