@@ -78,6 +78,16 @@ class TestGenerateReport:
         assert report.most_missed["count"] == 1
         assert report.most_done["name"] != report.most_missed["name"]
 
+    def test_하이라이트에_상세_이동용_home_chore_id_가_담긴다(self):
+        home, _admin, assignment = _confirmed_home(complete=1)
+        chore_id_by_name = {item.chore_name: item.home_chore_id for item in assignment.items.all()}
+
+        report = generate_report(home=home, week_start=week_start_of(timezone.localdate()))
+
+        done_item = list(assignment.items.all())[0]
+        assert report.most_done["home_chore_id"] == done_item.home_chore_id
+        assert report.most_missed["home_chore_id"] == chore_id_by_name[report.most_missed["name"]]
+
     def test_완료가_없으면_MVP_는_null(self):
         home, _admin, _ = _confirmed_home(complete=0)
 

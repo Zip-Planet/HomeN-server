@@ -73,8 +73,8 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 | `progress_rate` | integer | 진행률 % (반올림) |
 | `mvp` | object \| null | 우리집 MVP. 완료 이력이 없으면 `null` |
 | `member_stats` | array | 구성원별 달성 현황 (포인트 내림차순) |
-| `most_done` | object \| null | 가장 많이 한 집안일 `{name, count}` |
-| `most_missed` | object \| null | 미완료가 많은 집안일 `{name, count}` |
+| `most_done` | object \| null | 가장 많이 한 집안일 `{home_chore_id, name, count}` |
+| `most_missed` | object \| null | 미완료가 많은 집안일 `{home_chore_id, name, count}` |
 | `generated_at` | datetime | 집계 시각 (조회 시점) |
 
 ##### `mvp` 오브젝트
@@ -104,6 +104,7 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
+| `home_chore_id` | integer \| null | 집안일 ID — 카드 탭 시 상세(`GET /api/v1/homes/mine/chores/{home_chore_id}/`) 이동용. 원본이 삭제됐으면 `null` |
 | `name` | string | 집안일명 |
 | `count` | integer | 횟수 (완료 / 미완료 최다) |
 
@@ -132,8 +133,8 @@ GET /api/v1/homes/mine/reports/weekly/?week_start=YYYY-MM-DD
       "point": 570
     }
   ],
-  "most_done": { "name": "설거지", "count": 6 },
-  "most_missed": { "name": "화장실 청소", "count": 2 },
+  "most_done": { "home_chore_id": 12, "name": "설거지", "count": 6 },
+  "most_missed": { "home_chore_id": 15, "name": "화장실 청소", "count": 2 },
   "generated_at": "2026-01-28T14:03:12+09:00"
 }
 ```
@@ -168,6 +169,9 @@ curl -H "Authorization: Bearer <access>" \
   월요일로 정규화해 보낸다. 월요일이 아니면 400 이다.
 - **`mvp` / `most_done` / `most_missed` 는 `null` 일 수 있다.** 완료 이력이 없는 주차는
   `mvp = null`, 하이라이트도 `null` 이므로 각 카드에 null 가드를 둔다.
+- **하이라이트 카드 → 집안일 상세 이동.** `home_chore_id` 로 집안일 상세를 조회한다. 비활성화(삭제)된
+  집안일도 상세 조회는 되며 응답의 `is_active=false` 로 구분한다. 원본이 완전히 삭제돼 `home_chore_id` 가
+  `null` 이면 이동 버튼을 비활성화한다.
 - **`profile_image` 는 enum 정수.** MVP·구성원 통계 모두 이미지 URL 이 아니라 정수 enum 이므로
   FE 에서 이미지 매핑이 필요하다. 탈퇴 유저(MVP)의 `profile_image`·`uid` 는 `null` 일 수 있다.
 - **실시간 값이다.** `name`, `point`, `member_stats` 등은 조회 시점 값이다. 집안일 완료·수정이

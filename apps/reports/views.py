@@ -40,7 +40,7 @@ class WeeklyReportView(APIView):
             "| body | `completed_count` / `total_count` | integer | 완료 / 전체 항목 수 |\n"
             "| body | `mvp` | object | 우리집 MVP. 완료 이력이 없으면 null |\n"
             "| body | `member_stats[]` | array | 구성원별 `{assigned_count, completed_count, point}` |\n"
-            "| body | `most_done` / `most_missed` | object | 하이라이트 `{name, count}` |\n"
+            "| body | `most_done` / `most_missed` | object | 하이라이트 `{home_chore_id, name, count}` |\n"
             "| body | `generated_at` | datetime | 집계 시각 (조회 시점) |\n\n"
             "## ❌ 에러\n"
             "| status | code | 의미 |\n"

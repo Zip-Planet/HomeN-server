@@ -22,7 +22,7 @@
 | mvp_name | CharField(8) | MVP 닉네임 **스냅샷** (탈퇴해도 화면에 남김) |
 | mvp_point / mvp_completed_count | PositiveIntegerField | MVP 포인트·건수 |
 | member_stats | JSONField | 구성원별 `{uid, name, profile_image, assigned_count, completed_count, point}` |
-| most_done / most_missed | JSONField(null) | 하이라이트 `{name, count}` |
+| most_done / most_missed | JSONField(null) | 하이라이트 `{home_chore_id, name, count}` |
 | generated_at | DateTimeField | 생성 시각 |
 
 > `(home, week_start)` 유니크.
@@ -37,7 +37,8 @@
 - **MVP** = 완료 포인트 1위 (동점이면 완료 건수 우선).
 - **구성원 통계**는 배정(`assigned_count`)과 완료(`completed_count`)를 함께 담는다
   (화면이 `완료 · 7/7건` 으로 둘 다 보여준다). 배정이 없는 구성원도 0건으로 노출한다.
-- **하이라이트**는 집안일명 기준 완료/미완료 최다 항목.
+- **하이라이트**는 집안일 기준 완료/미완료 최다 항목. 화면에서 집안일 상세로 이동하도록
+  `home_chore_id` 를 함께 담는다 (원본이 물리 삭제됐으면 null).
 - 대상 분담안은 `confirmed` 또는 `expired` — **제안(proposed) 상태는 리포트 대상이 아니다.**
 
 ---
@@ -71,8 +72,8 @@
   "member_stats": [
     {"uid": "…", "name": "투다리김치우동", "profile_image": 1, "assigned_count": 7, "completed_count": 7, "point": 570}
   ],
-  "most_done": {"name": "설거지", "count": 6},
-  "most_missed": {"name": "화장실 청소", "count": 2},
+  "most_done": {"home_chore_id": 12, "name": "설거지", "count": 6},
+  "most_missed": {"home_chore_id": 15, "name": "화장실 청소", "count": 2},
   "generated_at": "2026-01-28T14:03:12+09:00"
 }
 ```

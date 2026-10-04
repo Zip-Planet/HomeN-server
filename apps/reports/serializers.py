@@ -17,8 +17,11 @@ class ReportMemberStatSerializer(serializers.Serializer):
 
 
 class ReportHighlightSerializer(serializers.Serializer):
-    """하이라이트 한 건 — `{name, count}`."""
+    """하이라이트 한 건 — `{home_chore_id, name, count}`."""
 
+    home_chore_id = serializers.IntegerField(
+        allow_null=True, help_text="집안일 ID (상세 이동용). 원본이 삭제됐으면 null."
+    )
     name = serializers.CharField(help_text="집안일명.")
     count = serializers.IntegerField(help_text="횟수.")
 
@@ -33,10 +36,10 @@ class WeeklyReportOutputSerializer(serializers.ModelSerializer):
         many=True, help_text="구성원별 달성 현황 (포인트 내림차순)."
     )
     most_done = ReportHighlightSerializer(
-        allow_null=True, help_text="가장 많이 한 집안일 `{name, count}`."
+        allow_null=True, help_text="가장 많이 한 집안일 `{home_chore_id, name, count}`."
     )
     most_missed = ReportHighlightSerializer(
-        allow_null=True, help_text="미완료가 많은 집안일 `{name, count}`."
+        allow_null=True, help_text="미완료가 많은 집안일 `{home_chore_id, name, count}`."
     )
 
     class Meta:
