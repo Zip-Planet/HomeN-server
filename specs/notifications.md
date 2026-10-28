@@ -5,9 +5,9 @@
 인앱 알림함(`N1_NotificationInbox`)과 푸시 설정(`T5_My`)을 담당한다.
 알림함과 푸시는 **문구·랜딩이 동일**하므로 같은 레코드를 근거로 한다.
 
-> **푸시 인프라는 FCM(Firebase Cloud Messaging)** 이다. 기기 등록·해제 API와 유저 단위 발송
-> 서비스(`send_push_to_user`)·테스트 발송까지 구현돼 있고, 알림 이벤트(`notify`)와 발송의 **연결은
-> 아직 하지 않았다** (`apps/notifications/services.py` 의 TODO).
+> **푸시 인프라는 FCM(Firebase Cloud Messaging)** 이다. 알림 이벤트(`notify`)가 인앱 알림을 적재하면
+> 트랜잭션 커밋 시점에 **같은 제목·본문·랜딩**으로 설정이 켜진 수신자의 기기에 푸시를 보낸다
+> (아래 "이벤트 푸시" 정책). 기기 등록·해제 API와 테스트 발송도 제공한다.
 
 ---
 
@@ -79,11 +79,33 @@
 | `purge_notifications` | 매일 (`0 4 * * *`, TZ=Asia/Seoul) | 7일 지난 알림 삭제 |
 | `send_test_push --user <id> [--title] [--body] [--dry-run]` | 수동 | 유저의 활성 기기 전부에 테스트 푸시 (백엔드 검증용) |
 
-### 푸시 발송 (`send_push_to_user`)
-- 유저의 `is_active` 기기를 `kind` 별로 묶어 `firebase-admin` 의 `send_each_for_multicast` 로 보낸다 (한 번에 500개).
+### 푸시 발송 (`send_push_to_users` / `send_push_to_user`)
+- 수신 유저들의 `is_active` 기기를 한 번에 조회해 기기마다 `Message`(token 또는 fid) 를 만들고
+  `firebase-admin` 의 `send_each` 로 보낸다 (한 호출에 500개, 넘으면 나눔). 제목·본문은 공통,
+  `data` 는 `data_by_user` 로 유저마다 다르게 실을 수 있다.
 - FCM 이 `UNREGISTERED`(404) 또는 `INVALID_ARGUMENT`(400) 로 답한 기기는 `is_active=False` 처리한다.
 - `dry_run=True` 면 FCM 검증만 하고 실제 전달하지 않는다.
 - `FIREBASE_CREDENTIALS_JSON` 이 비어 있으면 `PushNotConfiguredError` (API 는 503 `push_unavailable`). 서버 기동·테스트에는 영향 없음.
+
+### 이벤트 푸시 (`notify` → `_push_notifications`)
+- `notify` 는 `Notification` 을 bulk_create 한 뒤 `transaction.on_commit` 으로 푸시를 예약한다.
+  트랜잭션 안에서 호출되면(분담안 생성 등) **커밋 후**에, 밖에서 호출되면 즉시 나간다.
+  → 앱이 푸시를 탭했을 때 대상 데이터가 항상 조회 가능하다.
+- 수신자 필터: `NotificationSetting.allows(category)` 가 True 인 수신자만. 설정 레코드가 없으면 기본값(전체 on)으로 본다.
+  설정이 꺼진 유저도 인앱 알림은 남는다.
+- 푸시 내용: `title` / `body` 는 알림 레코드와 동일. `data` 는 아래 3개(모두 문자열).
+
+  | 키 | 값 |
+  |----|----|
+  | `deep_link` | 알림 레코드의 `deep_link` (예: `board:help:12`) |
+  | `category` | 알림 카테고리 (`board` 등) |
+  | `notification_id` | 수신자별 알림 PK. 앱이 탭 시 `POST /notifications/{id}/read/` 로 확인 처리 |
+
+- 실패 격리: FCM 미설정(`PushNotConfiguredError`) 은 `info` 로그, 그 외 모든 예외는 `logger.exception` 으로 남기고
+  **호출자에게 전파하지 않는다**. 도움 요청·분담안 확정 등 원래 동작과 알림함 레코드는 영향받지 않는다.
+- `PUSH_EVENTS_ENABLED=False` 면 이벤트 푸시만 멈추고 테스트 발송(API·커맨드)은 그대로 동작한다.
+- 모든 발생 지점(아래 표)은 `notify / notify_home / notify_admin` 을 거치므로 별도 연결 없이 전부 푸시로 이어진다.
+  cron 경로(`generate_weekly_reports`, 자동 확정)도 동일하다.
 
 ---
 
@@ -167,5 +189,6 @@
 |------|------|
 | `FIREBASE_CREDENTIALS_JSON` | Firebase 서비스 계정 JSON (한 줄). 비어 있으면 푸시 발송 비활성 |
 | `PUSH_TEST_ENDPOINT_ENABLED` | 테스트 푸시 엔드포인트 노출 여부 (기본 `DEBUG` 와 동일) |
+| `PUSH_EVENTS_ENABLED` | 알림 이벤트 발생 시 푸시 발송 여부 (기본 `True`). `False` 면 테스트 발송만 가능 |
 
 iOS 로 보내려면 Firebase 콘솔 > 프로젝트 설정 > Cloud Messaging 에 APNs 인증 키(.p8)가 등록돼 있어야 한다 (없으면 `ThirdPartyAuthError`).

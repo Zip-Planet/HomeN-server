@@ -192,8 +192,10 @@ from apps.notifications.fcm import PushNotConfiguredError  # noqa: E402
 from apps.notifications.models import Device  # noqa: E402
 from apps.notifications.services import (  # noqa: E402
     PushResult,
+    notify,
     register_device,
     send_push_to_user,
+    send_push_to_users,
     unregister_device,
 )
 from apps.notifications.tests.factories import DeviceFactory  # noqa: E402
@@ -266,7 +268,7 @@ class TestUnregisterDevice:
 
 
 class TestSendPushToUser:
-    @patch("apps.notifications.services.fcm.send_multicast")
+    @patch("apps.notifications.services.fcm.send_each")
     def test_활성_기기가_없으면_발송하지_않는다(self, mock_send):
         user = UserFactory()
         DeviceFactory(user=user, is_active=False)
@@ -276,24 +278,27 @@ class TestSendPushToUser:
         assert result == PushResult(sent=0, failed=0, deactivated=0)
         mock_send.assert_not_called()
 
-    @patch("apps.notifications.services.fcm.send_multicast")
-    def test_종류별로_나눠_보내고_결과를_합산한다(self, mock_send):
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_활성_기기_전부를_한_번에_보내고_결과를_합산한다(self, mock_send):
         user = UserFactory()
         DeviceFactory(user=user, registration_id="tok-1", kind="token")
         DeviceFactory(user=user, registration_id="tok-2", kind="token")
         DeviceFactory(user=user, registration_id="fid-1", kind="fid")
-        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["registration_ids"])))
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
 
         result = send_push_to_user(user=user, title="t", body="b", data={"k": "v"}, dry_run=True)
 
         assert result == PushResult(sent=3, failed=0, deactivated=0)
-        kinds = sorted(call.kwargs["kind"] for call in mock_send.call_args_list)
-        assert kinds == ["fid", "token"]
-        for call in mock_send.call_args_list:
-            assert call.kwargs["dry_run"] is True
-            assert call.kwargs["data"] == {"k": "v"}
+        assert mock_send.call_count == 1
+        call = mock_send.call_args
+        assert call.kwargs["dry_run"] is True
+        assert [(t.registration_id, t.kind, t.data) for t in call.kwargs["targets"]] == [
+            ("tok-1", "token", {"k": "v"}),
+            ("tok-2", "token", {"k": "v"}),
+            ("fid-1", "fid", {"k": "v"}),
+        ]
 
-    @patch("apps.notifications.services.fcm.send_multicast")
+    @patch("apps.notifications.services.fcm.send_each")
     def test_UNREGISTERED_INVALID_ARGUMENT_응답_기기는_비활성화된다(self, mock_send):
         user = UserFactory()
         DeviceFactory(user=user, registration_id="tok-ok", kind="token")
@@ -315,7 +320,7 @@ class TestSendPushToUser:
         assert Device.objects.get(registration_id="tok-bad").is_active is False
         assert Device.objects.get(registration_id="tok-quota").is_active is True
 
-    @patch("apps.notifications.services.fcm.send_multicast", side_effect=PushNotConfiguredError("no creds"))
+    @patch("apps.notifications.services.fcm.send_each", side_effect=PushNotConfiguredError("no creds"))
     def test_자격증명_미설정이면_예외가_그대로_올라온다(self, _mock_send):
         user = UserFactory()
         DeviceFactory(user=user)
@@ -324,8 +329,167 @@ class TestSendPushToUser:
             send_push_to_user(user=user, title="t", body="b")
 
 
+class TestSendPushToUsers:
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_여러_유저의_기기를_한_번에_보내고_유저별_data를_합친다(self, mock_send):
+        first, second, no_device = UserFactory(), UserFactory(), UserFactory()
+        DeviceFactory(user=first, registration_id="tok-a")
+        DeviceFactory(user=second, registration_id="tok-b")
+        DeviceFactory(user=second, registration_id="tok-b2", is_active=False)
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
+
+        result = send_push_to_users(
+            users=[first, second, no_device],
+            title="t",
+            body="b",
+            data={"deep_link": "x", "k": "common"},
+            data_by_user={first.id: {"notification_id": "1"}, second.id: {"notification_id": "2", "k": "mine"}},
+        )
+
+        assert result == PushResult(sent=2, failed=0, deactivated=0)
+        assert mock_send.call_count == 1
+        targets = {t.registration_id: t.data for t in mock_send.call_args.kwargs["targets"]}
+        assert targets == {
+            "tok-a": {"deep_link": "x", "k": "common", "notification_id": "1"},
+            "tok-b": {"deep_link": "x", "k": "mine", "notification_id": "2"},
+        }
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_500개를_넘으면_나눠서_보낸다(self, mock_send):
+        user = UserFactory()
+        Device.objects.bulk_create([
+            Device(user=user, registration_id=f"tok-{i}", platform="ios") for i in range(501)
+        ])
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
+
+        result = send_push_to_users(users=[user], title="t", body="b")
+
+        assert result.sent == 501
+        assert [len(c.kwargs["targets"]) for c in mock_send.call_args_list] == [500, 1]
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_기기가_하나도_없으면_호출하지_않는다(self, mock_send):
+        result = send_push_to_users(users=[UserFactory(), UserFactory()], title="t", body="b")
+
+        assert result == PushResult(sent=0, failed=0, deactivated=0)
+        mock_send.assert_not_called()
+
+
+class TestNotifyPush:
+    """`notify` → 커밋 후 푸시 연결."""
+
+    def _notify(self, home, recipients, category=NotificationCategory.BOARD):
+        return notify(
+            home=home,
+            recipients=recipients,
+            category=category,
+            title="도움이 필요해요",
+            body="설거지 좀 부탁해요",
+            deep_link="board:help:1",
+        )
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_설정이_켜진_수신자의_기기로_알림과_같은_내용을_보낸다(self, mock_send, django_capture_on_commit_callbacks):
+        home, _admin, (first, second) = _home_with_members()
+        DeviceFactory(user=first, registration_id="tok-1")
+        DeviceFactory(user=second, registration_id="tok-2")
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
+
+        with django_capture_on_commit_callbacks(execute=True):
+            created = self._notify(home, [first, second])
+
+        assert mock_send.call_count == 1
+        call = mock_send.call_args
+        assert call.kwargs["title"] == "도움이 필요해요"
+        assert call.kwargs["body"] == "설거지 좀 부탁해요"
+        by_id = {t.registration_id: t.data for t in call.kwargs["targets"]}
+        assert by_id["tok-1"] == {
+            "deep_link": "board:help:1",
+            "category": "board",
+            "notification_id": str(next(n.id for n in created if n.recipient_id == first.id)),
+        }
+        assert by_id["tok-2"]["notification_id"] == str(next(n.id for n in created if n.recipient_id == second.id))
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_마스터_토글이나_카테고리가_꺼진_유저는_제외되고_알림은_남는다(
+        self, mock_send, django_capture_on_commit_callbacks
+    ):
+        home, _admin, (master_off, category_off, no_setting) = _home_with_members(3)
+        update_setting(user=master_off, fields={"push_enabled": False})
+        update_setting(user=category_off, fields={"board": False})
+        for user in (master_off, category_off, no_setting):
+            DeviceFactory(user=user, registration_id=f"tok-{user.id}")
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
+
+        with django_capture_on_commit_callbacks(execute=True):
+            self._notify(home, [master_off, category_off, no_setting])
+
+        assert [t.registration_id for t in mock_send.call_args.kwargs["targets"]] == [f"tok-{no_setting.id}"]
+        assert Notification.objects.filter(recipient__in=[master_off, category_off, no_setting]).count() == 3
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_설정이_모두_꺼져_있으면_FCM을_호출하지_않는다(self, mock_send, django_capture_on_commit_callbacks):
+        home, _admin, (member,) = _home_with_members(1)
+        update_setting(user=member, fields={"push_enabled": False})
+        DeviceFactory(user=member)
+
+        with django_capture_on_commit_callbacks(execute=True):
+            self._notify(home, [member])
+
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.fcm.send_each", side_effect=PushNotConfiguredError("no creds"))
+    def test_자격증명이_없으면_조용히_건너뛰고_알림은_생성된다(self, _mock_send, django_capture_on_commit_callbacks):
+        home, _admin, (member,) = _home_with_members(1)
+        DeviceFactory(user=member)
+
+        with django_capture_on_commit_callbacks(execute=True):
+            created = self._notify(home, [member])
+
+        assert len(created) == 1
+        assert Notification.objects.filter(recipient=member).exists()
+
+    @patch("apps.notifications.services.fcm.send_each", side_effect=RuntimeError("fcm down"))
+    def test_FCM_장애도_호출자에게_전파되지_않는다(self, _mock_send, django_capture_on_commit_callbacks, caplog):
+        home, _admin, (member,) = _home_with_members(1)
+        DeviceFactory(user=member)
+
+        with django_capture_on_commit_callbacks(execute=True):
+            created = self._notify(home, [member])
+
+        assert len(created) == 1
+        assert "푸시 발송 실패" in caplog.text
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_PUSH_EVENTS_ENABLED가_꺼지면_보내지_않는다(self, mock_send, django_capture_on_commit_callbacks, settings):
+        settings.PUSH_EVENTS_ENABLED = False
+        home, _admin, (member,) = _home_with_members(1)
+        DeviceFactory(user=member)
+
+        with django_capture_on_commit_callbacks(execute=True):
+            self._notify(home, [member])
+
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.fcm.send_each")
+    def test_트랜잭션_안에서_호출되면_커밋_후에_보낸다(self, mock_send, django_capture_on_commit_callbacks):
+        from django.db import transaction
+
+        home, _admin, (member,) = _home_with_members(1)
+        DeviceFactory(user=member)
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["targets"])))
+
+        with django_capture_on_commit_callbacks(execute=False) as callbacks, transaction.atomic():
+            self._notify(home, [member])
+            mock_send.assert_not_called()
+
+        assert len(callbacks) == 1
+        callbacks[0]()
+        assert mock_send.call_count == 1
+
+
 class TestSendTestPushCommand:
-    @patch("apps.notifications.services.fcm.send_multicast")
+    @patch("apps.notifications.services.fcm.send_each")
     def test_커맨드가_결과를_출력한다(self, mock_send):
         user = UserFactory()
         DeviceFactory(user=user)
@@ -343,7 +507,7 @@ class TestSendTestPushCommand:
         with pytest.raises(CommandError):
             call_command("send_test_push", "--user", "999999")
 
-    @patch("apps.notifications.services.fcm.send_multicast", side_effect=PushNotConfiguredError("no creds"))
+    @patch("apps.notifications.services.fcm.send_each", side_effect=PushNotConfiguredError("no creds"))
     def test_자격증명_미설정이면_에러(self, _mock_send):
         from django.core.management.base import CommandError
 
