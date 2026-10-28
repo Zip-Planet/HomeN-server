@@ -178,3 +178,177 @@ class TestNotificationSetting:
 
         assert setting.allows("board") is False
         assert setting.allows("reward") is True
+
+
+# ── 기기 등록 / 해제 / 푸시 발송 ──────────────────────────────────────────────
+
+from datetime import UTC, datetime  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+from firebase_admin import exceptions as firebase_exceptions  # noqa: E402
+from firebase_admin import messaging  # noqa: E402
+
+from apps.notifications.fcm import PushNotConfiguredError  # noqa: E402
+from apps.notifications.models import Device  # noqa: E402
+from apps.notifications.services import (  # noqa: E402
+    PushResult,
+    register_device,
+    send_push_to_user,
+    unregister_device,
+)
+from apps.notifications.tests.factories import DeviceFactory  # noqa: E402
+
+
+def _batch(*exceptions):
+    """성공(None) / 실패(예외) 순서대로 SendResponse 를 담은 BatchResponse."""
+    responses = [
+        messaging.SendResponse({"name": f"projects/x/messages/{i}"} if exc is None else None, exc)
+        for i, exc in enumerate(exceptions)
+    ]
+    return messaging.BatchResponse(responses)
+
+
+class TestRegisterDevice:
+    def test_처음_등록하면_생성된다(self):
+        user = UserFactory()
+
+        device, created = register_device(user=user, registration_id="tok-1", kind="token", platform="ios")
+
+        assert created is True
+        assert device.user == user
+        assert device.is_active is True
+        assert Device.objects.count() == 1
+
+    def test_같은_식별자로_다시_등록하면_갱신만_된다(self):
+        user = UserFactory()
+        old = DeviceFactory(user=user, registration_id="tok-1", app_version="1.0.0", is_active=False)
+        old.last_seen_at = datetime(2020, 1, 1, tzinfo=UTC)
+        old.save(update_fields=["last_seen_at"])
+
+        device, created = register_device(
+            user=user, registration_id="tok-1", kind="token", platform="ios", app_version="1.1.0"
+        )
+
+        assert created is False
+        assert Device.objects.count() == 1
+        assert device.app_version == "1.1.0"
+        assert device.is_active is True
+        assert device.last_seen_at.year == timezone.now().year
+
+    def test_다른_유저가_같은_기기로_등록하면_새_유저로_옮겨진다(self):
+        first, second = UserFactory(), UserFactory()
+        DeviceFactory(user=first, registration_id="tok-shared")
+
+        device, _ = register_device(user=second, registration_id="tok-shared", kind="token", platform="android")
+
+        assert Device.objects.count() == 1
+        assert device.user == second
+        assert not Device.objects.filter(user=first).exists()
+
+
+class TestUnregisterDevice:
+    def test_본인_기기를_비활성화한다(self):
+        user = UserFactory()
+        DeviceFactory(user=user, registration_id="tok-1")
+
+        unregister_device(user=user, registration_id="tok-1")
+
+        assert Device.objects.get(registration_id="tok-1").is_active is False
+
+    def test_없는_기기나_타인_기기는_조용히_무시한다(self):
+        user, other = UserFactory(), UserFactory()
+        DeviceFactory(user=other, registration_id="tok-other")
+
+        unregister_device(user=user, registration_id="tok-other")
+        unregister_device(user=user, registration_id="tok-missing")
+
+        assert Device.objects.get(registration_id="tok-other").is_active is True
+
+
+class TestSendPushToUser:
+    @patch("apps.notifications.services.fcm.send_multicast")
+    def test_활성_기기가_없으면_발송하지_않는다(self, mock_send):
+        user = UserFactory()
+        DeviceFactory(user=user, is_active=False)
+
+        result = send_push_to_user(user=user, title="t", body="b")
+
+        assert result == PushResult(sent=0, failed=0, deactivated=0)
+        mock_send.assert_not_called()
+
+    @patch("apps.notifications.services.fcm.send_multicast")
+    def test_종류별로_나눠_보내고_결과를_합산한다(self, mock_send):
+        user = UserFactory()
+        DeviceFactory(user=user, registration_id="tok-1", kind="token")
+        DeviceFactory(user=user, registration_id="tok-2", kind="token")
+        DeviceFactory(user=user, registration_id="fid-1", kind="fid")
+        mock_send.side_effect = lambda **kw: _batch(*([None] * len(kw["registration_ids"])))
+
+        result = send_push_to_user(user=user, title="t", body="b", data={"k": "v"}, dry_run=True)
+
+        assert result == PushResult(sent=3, failed=0, deactivated=0)
+        kinds = sorted(call.kwargs["kind"] for call in mock_send.call_args_list)
+        assert kinds == ["fid", "token"]
+        for call in mock_send.call_args_list:
+            assert call.kwargs["dry_run"] is True
+            assert call.kwargs["data"] == {"k": "v"}
+
+    @patch("apps.notifications.services.fcm.send_multicast")
+    def test_UNREGISTERED_INVALID_ARGUMENT_응답_기기는_비활성화된다(self, mock_send):
+        user = UserFactory()
+        DeviceFactory(user=user, registration_id="tok-ok", kind="token")
+        DeviceFactory(user=user, registration_id="tok-gone", kind="token")
+        DeviceFactory(user=user, registration_id="tok-bad", kind="token")
+        DeviceFactory(user=user, registration_id="tok-quota", kind="token")
+        mock_send.return_value = _batch(
+            None,
+            messaging.UnregisteredError("gone"),
+            firebase_exceptions.InvalidArgumentError("bad token"),
+            messaging.QuotaExceededError("later"),
+        )
+
+        result = send_push_to_user(user=user, title="t", body="b")
+
+        assert result == PushResult(sent=1, failed=3, deactivated=2)
+        assert Device.objects.get(registration_id="tok-ok").is_active is True
+        assert Device.objects.get(registration_id="tok-gone").is_active is False
+        assert Device.objects.get(registration_id="tok-bad").is_active is False
+        assert Device.objects.get(registration_id="tok-quota").is_active is True
+
+    @patch("apps.notifications.services.fcm.send_multicast", side_effect=PushNotConfiguredError("no creds"))
+    def test_자격증명_미설정이면_예외가_그대로_올라온다(self, _mock_send):
+        user = UserFactory()
+        DeviceFactory(user=user)
+
+        with pytest.raises(PushNotConfiguredError):
+            send_push_to_user(user=user, title="t", body="b")
+
+
+class TestSendTestPushCommand:
+    @patch("apps.notifications.services.fcm.send_multicast")
+    def test_커맨드가_결과를_출력한다(self, mock_send):
+        user = UserFactory()
+        DeviceFactory(user=user)
+        mock_send.return_value = _batch(None)
+        out = StringIO()
+
+        call_command("send_test_push", "--user", str(user.id), "--dry-run", stdout=out)
+
+        assert "sent=1" in out.getvalue()
+        assert mock_send.call_args.kwargs["dry_run"] is True
+
+    def test_없는_유저면_에러(self):
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError):
+            call_command("send_test_push", "--user", "999999")
+
+    @patch("apps.notifications.services.fcm.send_multicast", side_effect=PushNotConfiguredError("no creds"))
+    def test_자격증명_미설정이면_에러(self, _mock_send):
+        from django.core.management.base import CommandError
+
+        user = UserFactory()
+        DeviceFactory(user=user)
+
+        with pytest.raises(CommandError):
+            call_command("send_test_push", "--user", str(user.id))

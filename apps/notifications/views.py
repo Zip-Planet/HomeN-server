@@ -1,21 +1,29 @@
-"""알림 컨트롤러 — 알림함 조회/확인, 푸시 설정, 분담안 생성 재촉."""
+"""알림 컨트롤러 — 알림함 조회/확인, 푸시 설정, 분담안 생성 재촉, 푸시 기기 등록/테스트 발송."""
 
+from django.conf import settings
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import APIException, NotFound
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from apps.homes.services import week_start_of
 from apps.notifications import selectors, services
+from apps.notifications.fcm import PushNotConfiguredError
 from apps.notifications.serializers import (
     AssignmentNudgeSerializer,
+    DeviceOutputSerializer,
+    DeviceRegisterSerializer,
+    DeviceUnregisterSerializer,
     NotificationListOutputSerializer,
     NotificationOutputSerializer,
     NotificationQuerySerializer,
     NotificationSettingSerializer,
+    PushResultSerializer,
+    PushTestSerializer,
 )
 from common.error_responses import ErrorResponseSerializer, error_example
 
@@ -223,3 +231,155 @@ class AssignmentNudgeView(APIView):
             raise NotFound(str(e)) from e
 
         return Response({"notified_count": len(created)}, status=status.HTTP_201_CREATED)
+
+
+# ── 푸시 기기 등록 / 해제 ─────────────────────────────────────────────────────
+
+
+class DeviceRegisterView(APIView):
+    """푸시 기기 등록 (앱 시작마다 호출)."""
+
+    @extend_schema(
+        tags=["Notifications"],
+        summary="푸시 기기 등록 (PUT, 멱등)",
+        description=(
+            "## 🔥 설명\n"
+            "Firebase Messaging SDK 가 돌려준 기기 식별자를 현재 유저에게 등록한다. "
+            "앱을 시작할 때마다(로그인 이후) 호출해도 안전하다 — 같은 식별자면 갱신만 되고 "
+            "`last_seen_at` 이 새로 찍힌다. 같은 기기로 다른 계정이 로그인하면 기기가 새 계정으로 옮겨진다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n\n"
+            "## 📥 요청\n"
+            "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| body | `registration_id` | string | ✓ | FCM registration token 또는 FID |\n"
+            "| body | `platform` | `ios` \\| `android` | ✓ | 플랫폼 |\n"
+            "| body | `kind` | `token` \\| `fid` | - | 식별자 종류 (기본 `token`) |\n"
+            "| body | `app_version` | string | - | 앱 버전 |\n\n"
+            "## 📤 응답\n"
+            "201 새로 등록 / 200 기존 기기 갱신. 본문은 동일.\n"
+        ),
+        request=DeviceRegisterSerializer,
+        responses={
+            200: OpenApiResponse(response=DeviceOutputSerializer, description="기존 기기 갱신."),
+            201: OpenApiResponse(response=DeviceOutputSerializer, description="새 기기 등록."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="입력 검증 실패."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+        },
+        examples=[
+            OpenApiExample(
+                "iOS 기기 등록",
+                value={"registration_id": "dXh3…:APA91b…", "platform": "ios", "app_version": "1.2.0"},
+                request_only=True,
+            ),
+            _AUTH_FAILED_EXAMPLE,
+        ],
+    )
+    def put(self, request: Request) -> Response:
+        serializer = DeviceRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        device, created = services.register_device(user=request.user, **serializer.validated_data)
+        return Response(
+            DeviceOutputSerializer(device).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class DeviceUnregisterView(APIView):
+    """푸시 기기 해제 (로그아웃 시)."""
+
+    @extend_schema(
+        tags=["Notifications"],
+        summary="푸시 기기 해제 (로그아웃 시)",
+        description=(
+            "## 🔥 설명\n"
+            "본인 기기를 발송 대상에서 제외한다. 로그아웃 직전에 호출한다. "
+            "없거나 타인의 식별자여도 204 (멱등).\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수.\n"
+        ),
+        request=DeviceUnregisterSerializer,
+        responses={
+            204: OpenApiResponse(description="해제 완료 (또는 해당 없음)."),
+            400: OpenApiResponse(response=ErrorResponseSerializer, description="`registration_id` 누락."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+        },
+        examples=[
+            OpenApiExample("해제", value={"registration_id": "dXh3…:APA91b…"}, request_only=True),
+            _AUTH_FAILED_EXAMPLE,
+        ],
+    )
+    def post(self, request: Request) -> Response:
+        serializer = DeviceUnregisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        services.unregister_device(user=request.user, **serializer.validated_data)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ── 테스트 푸시 ───────────────────────────────────────────────────────────────
+
+
+class PushUnavailable(APIException):
+    """FCM 자격증명이 설정되지 않아 발송할 수 없을 때 (503)."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "푸시 발송이 설정되지 않았습니다."
+    default_code = "push_unavailable"
+
+
+class PushTestThrottle(UserRateThrottle):
+    """테스트 푸시 남용 방지 — `REST_FRAMEWORK.DEFAULT_THROTTLE_RATES.push_test`."""
+
+    scope = "push_test"
+
+
+class PushTestView(APIView):
+    """본인 기기로 테스트 푸시 발송 (개발·검증용)."""
+
+    throttle_classes = [PushTestThrottle]
+
+    @extend_schema(
+        tags=["Notifications"],
+        summary="본인 기기로 테스트 푸시 발송",
+        description=(
+            "## 🔥 설명\n"
+            "호출자의 활성 기기 전부에 테스트 푸시를 보낸다. 앱에서 기기 등록 → 푸시 수신까지 "
+            "end-to-end 로 확인하는 용도이며, 설정 `PUSH_TEST_ENDPOINT_ENABLED` 가 꺼진 환경에서는 404.\n\n"
+            "`dry_run=true` 면 실제 전달 없이 FCM 검증만 한다 (식별자가 유효한지 확인). "
+            "FCM 이 무효하다고 답한 기기는 자동으로 비활성화된다.\n\n"
+            "## 🔐 인증\n"
+            "Bearer access 토큰 필수. 분당 5회 제한.\n"
+        ),
+        request=PushTestSerializer,
+        responses={
+            200: OpenApiResponse(response=PushResultSerializer, description="발송 결과 집계."),
+            401: OpenApiResponse(response=ErrorResponseSerializer, description="인증 실패."),
+            404: OpenApiResponse(response=ErrorResponseSerializer, description="테스트 엔드포인트 비활성."),
+            429: OpenApiResponse(response=ErrorResponseSerializer, description="분당 5회 초과."),
+            503: OpenApiResponse(response=ErrorResponseSerializer, description="FCM 자격증명 미설정."),
+        },
+        examples=[
+            OpenApiExample("기본 문구로 실발송", value={}, request_only=True),
+            OpenApiExample("검증만", value={"dry_run": True}, request_only=True),
+            OpenApiExample(
+                "결과", value={"sent": 1, "failed": 0, "deactivated": 0}, response_only=True, status_codes=["200"]
+            ),
+            error_example(code="push_unavailable", message="푸시 발송이 설정되지 않았습니다.", name="자격증명 미설정"),
+            _AUTH_FAILED_EXAMPLE,
+        ],
+    )
+    def post(self, request: Request) -> Response:
+        if not settings.PUSH_TEST_ENDPOINT_ENABLED:
+            raise NotFound()
+
+        serializer = PushTestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            result = services.send_push_to_user(user=request.user, **serializer.validated_data)
+        except PushNotConfiguredError as e:
+            raise PushUnavailable(str(e)) from e
+
+        return Response(PushResultSerializer(result).data)
