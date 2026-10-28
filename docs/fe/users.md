@@ -97,14 +97,19 @@
 
 ### 3.2 `POST /api/v1/auth/apple/`
 
-Apple Sign In 인가 코드(`code`)로 access/refresh JWT 를 발급한다. Apple `refresh_token`
+iOS 네이티브 Sign in with Apple 인가 코드(`code`)로 access/refresh JWT 를 발급한다. 서버는
+Apple 과 코드를 교환해 받은 id_token 을 Apple 공개키로 검증한다. Apple `refresh_token`
 은 탈퇴 시 token revocation 을 위해 서버에 저장된다. **인증 불필요**(AllowAny).
+
+> iOS 전용이다 (Android 앱은 Apple 로그인을 쓰지 않는다). `ASAuthorizationAppleIDCredential` 의
+> `authorizationCode` 를 `code` 로, `identityToken` 을 `id_token` 으로 보낸다. 인가 코드는 **5분 · 1회용**이다.
 
 **요청 (body)**
 
 | 위치 | 필드 | 타입 | 필수 | 설명 |
 | --- | --- | --- | --- | --- |
-| body | `code` | string | ✓ | Apple Sign In 콜백으로 전달된 1회용 인가 코드 |
+| body | `code` | string | ✓ | Apple SDK 가 돌려준 1회용 인가 코드 (`authorizationCode`) |
+| body | `id_token` | string | - | Apple SDK 가 돌려준 `identityToken`. 보내면 같은 사용자인지 추가 검증 |
 
 **응답 (200)**
 
@@ -129,7 +134,7 @@ Apple Sign In 인가 코드(`code`)로 access/refresh JWT 를 발급한다. Appl
 | status | code | 의미 |
 | --- | --- | --- |
 | 400 | `invalid` | `code` 누락 |
-| 401 | `authentication_failed` | Apple 토큰 교환 실패, id_token 검증 실패 |
+| 401 | `authentication_failed` | Apple 토큰 교환 실패(코드 재사용·만료), id_token 검증 실패(서명·aud·만료) |
 
 ---
 
@@ -386,6 +391,8 @@ Apple Sign In 인가 코드(`code`)로 access/refresh JWT 를 발급한다. Appl
 1. 카카오/애플 OAuth2 로 인가 코드(`code`)를 획득한다.
 2. `POST /auth/kakao/` 또는 `POST /auth/apple/` 로 `code` 를 전달해 access/refresh 를 받는다.
    - 카카오는 접속 환경별로 `redirect_uri` 가 다르면 **authorize 때와 동일한 값**을 함께 보낸다.
+   - 애플(iOS)은 `authorizationCode` 를 `code` 로 보내고, `identityToken` 은 `id_token` 으로 함께 보낸다.
+     로컬 서버로 검증하는 방법은 [local-apple-login-testing.md](local-apple-login-testing.md) 참고.
 3. 응답의 `is_profile_set` → false면 온보딩, `has_home` → false면 집 생성/참여로 분기한다.
 
 ### 5.2 토큰 갱신 흐름

@@ -86,14 +86,21 @@
 Apple 인가 코드로 로그인 또는 회원가입을 처리합니다.
 `SocialAccount`에 `(apple, provider_id)`가 없으면 신규 유저를 생성합니다.
 
-> **Android 환경**: iOS Native(Bundle ID)와 달리 Android/웹에서는 Apple **Service ID**를 `APPLE_CLIENT_ID`로 사용하고 `APPLE_REDIRECT_URI` 설정이 필요합니다.
+> **iOS 네이티브 플로우 전용**입니다. 앱이 `ASAuthorizationController`로 받은 `authorizationCode`를 보내면
+> 서버가 Apple 토큰 엔드포인트에서 교환(client_id = iOS Bundle ID, `redirect_uri` 없음)하고, 돌아온 `id_token`을
+> Apple 공개키(JWKS)로 검증(서명·`iss`·`aud`·`exp`)한 뒤 `sub`로 유저를 식별합니다.
+> Android 앱은 Apple 로그인을 사용하지 않으므로 Service ID·웹 콜백은 없습니다.
 
 **Request Body**
 ```json
 {
-  "code": "애플_인가_코드"
+  "code": "애플_인가_코드",
+  "id_token": "애플_identityToken (선택)"
 }
 ```
+
+> `id_token`(선택)은 앱이 SDK에서 받은 `identityToken`입니다. 보내면 서버가 같은 방식으로 검증해 인가 코드와
+> 동일한 사용자(`sub`)인지 추가 확인합니다.
 
 **Response 200**
 ```json
@@ -217,10 +224,9 @@ Access 토큰을 갱신합니다.
 | `KAKAO_CLIENT_SECRET` | 카카오 Client Secret (보안 강화 시 사용) |
 | `KAKAO_REDIRECT_URI` | 카카오 Redirect URI |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `APPLE_CLIENT_ID` | iOS: Bundle ID / Android·웹: Service ID |
+| `APPLE_CLIENT_ID` | iOS 앱 Bundle ID |
 | `APPLE_KEY_ID` | Apple Sign In Key ID |
 | `APPLE_PRIVATE_KEY` | Apple ES256 개인키 (줄바꿈은 `\n`으로 입력) |
-| `APPLE_REDIRECT_URI` | Apple Redirect URI (Android·웹 플로우에서 필수) |
 
 ---
 

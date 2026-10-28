@@ -166,7 +166,7 @@ KAKAO_ADMIN_KEY = env("KAKAO_ADMIN_KEY", default="")
 KAKAO_CLIENT_SECRET = env("KAKAO_CLIENT_SECRET", default="")
 KAKAO_REDIRECT_URI = env("KAKAO_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/kakao/")
 
-# Apple Sign In
+# Apple Sign In (iOS 네이티브 플로우 전용 — APPLE_CLIENT_ID 는 앱 Bundle ID)
 APPLE_TEAM_ID = env("APPLE_TEAM_ID", default="APPLE_TEAM_ID_PLACEHOLDER")
 APPLE_CLIENT_ID = env("APPLE_CLIENT_ID", default="com.example.app.placeholder")
 APPLE_KEY_ID = env("APPLE_KEY_ID", default="APPLE_KEY_ID_PLACEHOLDER")
@@ -174,4 +174,3 @@ APPLE_PRIVATE_KEY = env(
     "APPLE_PRIVATE_KEY",
     default="-----BEGIN EC PRIVATE KEY-----\nPLACEHOLDER\n-----END EC PRIVATE KEY-----",
 ).replace("\\n", "\n")
-APPLE_REDIRECT_URI = env("APPLE_REDIRECT_URI", default="https://localhost/api/v1/auth/apple/")

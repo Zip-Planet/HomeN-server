@@ -12,6 +12,13 @@ from apps.users.selectors import get_social_account
 
 logger = logging.getLogger(__name__)
 
+APPLE_ISSUER = "https://appleid.apple.com"
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+
+# Apple 공개키(JWKS) 클라이언트 — 모듈 레벨 1개를 공유해 키를 캐시한다.
+# `kid` 가 캐시에 없으면 자동으로 다시 조회한다.
+_apple_jwk_client = jwt.PyJWKClient(APPLE_JWKS_URL, cache_keys=True)
+
 
 class SocialLoginError(Exception):
     pass
@@ -221,6 +228,8 @@ def _generate_apple_client_secret() -> str:
 def _exchange_apple_code(code: str, client_secret: str) -> dict:
     """애플 인가 코드를 토큰으로 교환합니다.
 
+    iOS 네이티브 플로우 전용이므로 client_id 는 앱 Bundle ID 이고 redirect_uri 는 보내지 않습니다.
+
     Args:
         code: 애플로부터 받은 인가 코드.
         client_secret: 서명된 JWT client_secret.
@@ -231,13 +240,15 @@ def _exchange_apple_code(code: str, client_secret: str) -> dict:
     Raises:
         SocialLoginError: 토큰 교환에 실패한 경우.
     """
+    # iOS 네이티브(ASAuthorizationController) 플로우는 authorize 요청에 redirect_uri 가
+    # 없으므로 교환 요청에도 포함하지 않는다 (Apple 문서: "include redirect_uri only if
+    # the application provided a redirect_uri in the initial authorization request").
     response = requests.post(
         "https://appleid.apple.com/auth/token",
         data={
             "grant_type": "authorization_code",
             "client_id": settings.APPLE_CLIENT_ID,
             "client_secret": client_secret,
-            "redirect_uri": settings.APPLE_REDIRECT_URI,
             "code": code,
         },
         timeout=10,
@@ -248,19 +259,32 @@ def _exchange_apple_code(code: str, client_secret: str) -> dict:
     return data
 
 
-def _decode_apple_id_token(id_token: str) -> dict:
-    """애플 id_token JWT를 디코딩하여 유저 정보를 추출합니다.
+def _verify_apple_id_token(id_token: str) -> dict:
+    """애플 id_token(JWT)의 서명과 클레임을 검증하고 페이로드를 반환합니다.
 
-    서명 검증은 생략합니다. 운영 환경에서는
-    https://appleid.apple.com/auth/keys 의 공개키로 검증해야 합니다.
+    Apple 공식 절차(Verifying a user)대로 JWKS 공개키로 RS256 서명을 확인하고,
+    `iss` 가 Apple, `aud` 가 우리 앱 Bundle ID, `exp` 가 미래인지 검사합니다.
 
     Args:
         id_token: 애플로부터 받은 JWT id_token.
 
     Returns:
-        'sub'를 포함한 디코딩된 페이로드 딕셔너리.
+        'sub'를 포함한 검증된 페이로드 딕셔너리.
+
+    Raises:
+        SocialLoginError: 서명·발급자·대상·만료 검증 중 하나라도 실패한 경우.
     """
-    return jwt.decode(id_token, options={"verify_signature": False})
+    try:
+        signing_key = _apple_jwk_client.get_signing_key_from_jwt(id_token)
+        return jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.APPLE_CLIENT_ID,
+            issuer=APPLE_ISSUER,
+        )
+    except (jwt.PyJWTError, jwt.PyJWKClientError) as e:
+        raise SocialLoginError(f"Apple id_token 검증 실패: {e}") from e
 
 
 def _apple_revoke_token(refresh_token: str) -> None:
@@ -287,11 +311,15 @@ def _apple_revoke_token(refresh_token: str) -> None:
         logger.warning("Apple token revoke 실패: status=%s body=%s", response.status_code, response.text)
 
 
-def apple_login(*, code: str) -> dict[str, str]:
+def apple_login(*, code: str, id_token: str = "") -> dict[str, str]:
     """Apple Sign In으로 유저를 인증하고 JWT 토큰을 반환합니다.
+
+    인가 코드를 Apple 에서 교환해 받은 id_token 을 검증해 유저를 식별합니다.
+    앱이 자체 수신한 id_token 을 함께 보낸 경우 동일 유저(sub)인지 추가 확인합니다.
 
     Args:
         code: 애플로부터 받은 인가 코드.
+        id_token: (선택) 앱이 Apple SDK 에서 직접 받은 id_token.
 
     Returns:
         'access'와 'refresh' JWT 토큰 문자열을 담은 딕셔너리.
@@ -301,9 +329,11 @@ def apple_login(*, code: str) -> dict[str, str]:
     """
     client_secret = _generate_apple_client_secret()
     token_data = _exchange_apple_code(code, client_secret)
-    user_info = _decode_apple_id_token(token_data["id_token"])
+    user_info = _verify_apple_id_token(token_data["id_token"])
 
     provider_id = user_info["sub"]
+    if id_token and _verify_apple_id_token(id_token)["sub"] != provider_id:
+        raise SocialLoginError("Apple id_token 검증 실패: 인가 코드와 id_token 의 사용자가 다릅니다.")
     refresh_token = token_data.get("refresh_token", "")
 
     user = _get_or_create_social_user(provider=SocialAccount.APPLE, provider_id=provider_id, refresh_token=refresh_token)
