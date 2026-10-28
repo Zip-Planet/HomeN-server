@@ -1,15 +1,17 @@
 """알림 적재 / 설정 갱신 / 푸시 기기 등록·발송.
 
-인앱 알림 레코드 적재와, FCM 기기 식별자 등록·해제, 유저 단위 푸시 발송을 담당한다.
-알림 이벤트(`notify`)와 푸시 발송(`send_push_to_user`)의 연결은 아직 하지 않았다 —
-`notify` 의 TODO 참고. 알림함과 푸시는 문구·랜딩이 동일하므로 연결 시 같은 레코드를
-근거로 하면 된다.
+인앱 알림 레코드 적재와, FCM 기기 식별자 등록·해제, 푸시 발송을 담당한다.
+`notify` 가 알림 레코드를 만든 뒤 트랜잭션 커밋 시점에 같은 문구·랜딩으로 푸시를
+보낸다 (`_push_notifications`). 푸시는 부가 기능이라 어떤 실패도 호출한 서비스로
+전파하지 않는다.
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from itertools import groupby
 
+from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from firebase_admin import exceptions as firebase_exceptions
 from firebase_admin import messaging
@@ -18,6 +20,8 @@ from apps.homes.models import HomeMember
 from apps.notifications import fcm
 from apps.notifications.models import Device, Notification, NotificationCategory, NotificationSetting
 from apps.users.models import User
+
+logger = logging.getLogger(__name__)
 
 NOTIFICATION_RETENTION_DAYS = 7
 """알림 보관 기간 — "7일 전 알림까지 확인할 수 있어요"."""
@@ -77,10 +81,11 @@ def notify(
     body: str = "",
     deep_link: str = "",
 ) -> list[Notification]:
-    """수신자들에게 인앱 알림을 적재합니다.
+    """수신자들에게 인앱 알림을 적재하고, 커밋 후 같은 내용의 푸시를 보냅니다.
 
     푸시 설정이 꺼진 유저에게도 **인앱 알림은 남긴다** — 알림함은 기록이고,
-    설정 토글은 푸시 발송 여부만 제어하기 때문이다.
+    설정 토글은 푸시 발송 여부만 제어하기 때문이다. 푸시는 트랜잭션이 커밋된
+    뒤에 나가며(`transaction.on_commit`), 트랜잭션 밖에서 호출되면 즉시 나간다.
 
     Args:
         home: 알림이 발생한 집.
@@ -108,10 +113,52 @@ def notify(
         for user in recipients
     ])
 
-    # TODO(푸시): `NotificationSetting.allows(category)` 가 True 인 수신자에게
-    # `send_push_to_user(user=..., title=title, body=body, data={"deep_link": deep_link})`
-    # 로 동일 문구/랜딩의 앱푸시를 발송한다 (기기 등록·발송 서비스는 준비됨).
+    transaction.on_commit(lambda: _push_notifications(created))
     return created
+
+
+def _push_notifications(notifications: list[Notification]) -> None:
+    """알림 레코드와 같은 문구·랜딩의 푸시를 설정이 켜진 수신자에게 보냅니다.
+
+    `notify` 가 커밋 시점에 호출한다. 수신자의 `NotificationSetting` 이 없으면
+    기본값(전체 on)으로 본다. FCM 미설정·장애·무효 기기 등 어떤 실패도 로그만 남기고
+    삼킨다 — 알림함 레코드와 원래 동작(도움 요청, 분담안 확정 등)은 영향받지 않는다.
+
+    Args:
+        notifications: `notify` 가 방금 만든 알림 목록 (제목·본문·카테고리 동일).
+    """
+    if not notifications or not settings.PUSH_EVENTS_ENABLED:
+        return
+
+    first = notifications[0]
+    settings_by_user = NotificationSetting.objects.filter(
+        user_id__in=[n.recipient_id for n in notifications]
+    ).in_bulk(field_name="user_id")
+    allowed = [
+        n
+        for n in notifications
+        if (setting := settings_by_user.get(n.recipient_id)) is None or setting.allows(n.category)
+    ]
+    if not allowed:
+        return
+
+    data_by_user = {
+        n.recipient_id: {"deep_link": n.deep_link, "category": n.category, "notification_id": str(n.id)}
+        for n in allowed
+    }
+    try:
+        result = send_push_to_users(
+            users=[n.recipient for n in allowed], title=first.title, body=first.body, data_by_user=data_by_user
+        )
+    except fcm.PushNotConfiguredError as e:
+        logger.info("푸시 발송 건너뜀 (FCM 미설정): %s", e)
+    except Exception:
+        logger.exception("푸시 발송 실패 category=%s recipients=%d", first.category, len(allowed))
+    else:
+        logger.info(
+            "푸시 발송 category=%s recipients=%d sent=%d failed=%d deactivated=%d",
+            first.category, len(allowed), result.sent, result.failed, result.deactivated,
+        )
 
 
 def notify_home(
@@ -274,19 +321,27 @@ def unregister_device(*, user: User, registration_id: str) -> None:
     Device.objects.filter(user=user, registration_id=registration_id).update(is_active=False)
 
 
-def send_push_to_user(
-    *, user: User, title: str, body: str, data: dict[str, str] | None = None, dry_run: bool = False
+def send_push_to_users(
+    *,
+    users: list[User],
+    title: str,
+    body: str,
+    data: dict[str, str] | None = None,
+    data_by_user: dict[int, dict[str, str]] | None = None,
+    dry_run: bool = False,
 ) -> PushResult:
-    """유저의 활성 기기 전부에 푸시를 보냅니다.
+    """여러 유저의 활성 기기 전부에 푸시를 보냅니다 (500개 단위로 FCM 호출).
 
-    식별자 종류(token/fid)별로 나눠 FCM 에 보내고, FCM 이 무효하다고 답한 기기
-    (UNREGISTERED / INVALID_ARGUMENT) 는 `is_active=False` 로 바꾼다.
+    FCM 이 무효하다고 답한 기기(UNREGISTERED / INVALID_ARGUMENT)는 `is_active=False`
+    로 바꾼다.
 
     Args:
-        user: 수신 유저.
+        users: 수신 유저 목록.
         title: 알림 제목.
         body: 알림 본문.
-        data: 앱이 받을 추가 데이터.
+        data: 모든 기기에 공통으로 실을 데이터.
+        data_by_user: 유저 PK 별로 추가할 데이터 (예: 수신자마다 다른 `notification_id`).
+            `data` 와 합쳐지며 같은 키는 이쪽이 우선한다.
         dry_run: True 면 FCM 검증만 하고 실제 전달하지 않는다.
 
     Returns:
@@ -295,25 +350,35 @@ def send_push_to_user(
     Raises:
         fcm.PushNotConfiguredError: FCM 자격증명이 없을 때.
     """
-    devices = list(Device.objects.filter(user=user, is_active=True).order_by("kind", "id"))
+    devices = list(Device.objects.filter(user__in=users, is_active=True).order_by("id"))
     if not devices:
         return PushResult(sent=0, failed=0, deactivated=0)
 
+    targets = []
+    for device in devices:
+        merged = {**(data or {}), **(data_by_user or {}).get(device.user_id, {})}
+        targets.append(fcm.PushTarget(registration_id=device.registration_id, kind=device.kind, data=merged or None))
+
     sent = failed = 0
     dead_ids: list[str] = []
-    for kind, group in groupby(devices, key=lambda d: d.kind):
-        ids = [d.registration_id for d in group]
-        response = fcm.send_multicast(
-            registration_ids=ids, kind=kind, title=title, body=body, data=data, dry_run=dry_run
-        )
-        for registration_id, item in zip(ids, response.responses, strict=True):
+    for start in range(0, len(targets), fcm.BATCH_LIMIT):
+        chunk = targets[start : start + fcm.BATCH_LIMIT]
+        response = fcm.send_each(targets=chunk, title=title, body=body, dry_run=dry_run)
+        for target, item in zip(chunk, response.responses, strict=True):
             if item.success:
                 sent += 1
                 continue
             failed += 1
             if isinstance(item.exception, _DEAD_REGISTRATION_ERRORS):
-                dead_ids.append(registration_id)
+                dead_ids.append(target.registration_id)
 
     if dead_ids:
         Device.objects.filter(registration_id__in=dead_ids).update(is_active=False)
     return PushResult(sent=sent, failed=failed, deactivated=len(dead_ids))
+
+
+def send_push_to_user(
+    *, user: User, title: str, body: str, data: dict[str, str] | None = None, dry_run: bool = False
+) -> PushResult:
+    """유저 한 명의 활성 기기 전부에 푸시를 보냅니다 (`send_push_to_users` 의 단일 유저 버전)."""
+    return send_push_to_users(users=[user], title=title, body=body, data=data, dry_run=dry_run)

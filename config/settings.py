@@ -185,3 +185,5 @@ APPLE_PRIVATE_KEY = env(
 FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")
 # 본인 기기로 테스트 푸시를 보내는 POST /api/v1/notifications/test/ 노출 여부 (기본: DEBUG 와 동일).
 PUSH_TEST_ENDPOINT_ENABLED = env.bool("PUSH_TEST_ENDPOINT_ENABLED", default=DEBUG)
+# 알림 이벤트(notify) 발생 시 푸시 발송 여부. False 면 이벤트 연동만 멈추고 테스트 발송은 유지된다.
+PUSH_EVENTS_ENABLED = env.bool("PUSH_EVENTS_ENABLED", default=True)
