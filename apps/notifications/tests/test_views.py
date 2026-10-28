@@ -118,3 +118,109 @@ class TestAssignmentNudgeView:
 
     def test_집이_없으면_404(self):
         assert auth_client(UserFactory()).post(self.url, {}, format="json").status_code == 404
+
+
+# ── 기기 등록 / 해제 / 테스트 푸시 ────────────────────────────────────────────
+
+from unittest.mock import patch  # noqa: E402
+
+from apps.notifications.fcm import PushNotConfiguredError  # noqa: E402
+from apps.notifications.models import Device  # noqa: E402
+from apps.notifications.services import PushResult  # noqa: E402
+from apps.notifications.tests.factories import DeviceFactory  # noqa: E402
+
+_DEVICES_URL = "/api/v1/users/me/devices/"
+_UNREGISTER_URL = "/api/v1/users/me/devices/unregister/"
+_PUSH_TEST_URL = "/api/v1/notifications/test/"
+
+
+class TestDeviceRegisterView:
+    def test_처음_등록_201(self):
+        user = UserFactory()
+
+        payload = {"registration_id": "tok-1", "kind": "token", "platform": "ios", "app_version": "1.0.0"}
+
+        res = auth_client(user).put(_DEVICES_URL, payload, format="json")
+
+        assert res.status_code == 201
+        assert res.data["registration_id"] == "tok-1"
+        assert res.data["is_active"] is True
+        assert Device.objects.get(registration_id="tok-1").user == user
+
+    def test_재등록_200(self):
+        user = UserFactory()
+        DeviceFactory(user=user, registration_id="tok-1")
+
+        res = auth_client(user).put(_DEVICES_URL, {"registration_id": "tok-1", "platform": "ios"}, format="json")
+
+        assert res.status_code == 200
+        assert res.data["kind"] == "token"
+
+    def test_platform_누락_400(self):
+        res = auth_client(UserFactory()).put(_DEVICES_URL, {"registration_id": "tok-1"}, format="json")
+
+        assert res.status_code == 400
+        assert res.data["error"]["code"] == "platform"
+
+    def test_비로그인_401(self):
+        res = APIClient().put(_DEVICES_URL, {"registration_id": "tok-1", "platform": "ios"}, format="json")
+
+        assert res.status_code == 401
+
+
+class TestDeviceUnregisterView:
+    def test_해제_204(self):
+        user = UserFactory()
+        DeviceFactory(user=user, registration_id="tok-1")
+
+        res = auth_client(user).post(_UNREGISTER_URL, {"registration_id": "tok-1"}, format="json")
+
+        assert res.status_code == 204
+        assert Device.objects.get(registration_id="tok-1").is_active is False
+
+    def test_없는_기기도_204(self):
+        res = auth_client(UserFactory()).post(_UNREGISTER_URL, {"registration_id": "nope"}, format="json")
+
+        assert res.status_code == 204
+
+
+class TestPushTestView:
+    @patch("apps.notifications.views.services.send_push_to_user")
+    def test_본인_기기로_발송_200(self, mock_send, settings):
+        settings.PUSH_TEST_ENDPOINT_ENABLED = True
+        mock_send.return_value = PushResult(sent=1, failed=0, deactivated=0)
+        user = UserFactory()
+
+        res = auth_client(user).post(_PUSH_TEST_URL, {"dry_run": True}, format="json")
+
+        assert res.status_code == 200
+        assert res.data == {"sent": 1, "failed": 0, "deactivated": 0}
+        assert mock_send.call_args.kwargs["user"] == user
+        assert mock_send.call_args.kwargs["dry_run"] is True
+
+    @patch("apps.notifications.views.services.send_push_to_user", side_effect=PushNotConfiguredError("no creds"))
+    def test_자격증명_미설정_503(self, _mock_send, settings):
+        settings.PUSH_TEST_ENDPOINT_ENABLED = True
+
+        res = auth_client(UserFactory()).post(_PUSH_TEST_URL, {}, format="json")
+
+        assert res.status_code == 503
+        assert res.data["error"]["code"] == "push_unavailable"
+
+    def test_비활성_설정이면_404(self, settings):
+        settings.PUSH_TEST_ENDPOINT_ENABLED = False
+
+        res = auth_client(UserFactory()).post(_PUSH_TEST_URL, {}, format="json")
+
+        assert res.status_code == 404
+
+    @patch("apps.notifications.views.services.send_push_to_user")
+    def test_분당_5회_초과_429(self, mock_send, settings):
+        settings.PUSH_TEST_ENDPOINT_ENABLED = True
+        mock_send.return_value = PushResult(sent=0, failed=0, deactivated=0)
+        client = auth_client(UserFactory())
+
+        statuses = [client.post(_PUSH_TEST_URL, {}, format="json").status_code for _ in range(6)]
+
+        assert statuses[:5] == [200] * 5
+        assert statuses[5] == 429

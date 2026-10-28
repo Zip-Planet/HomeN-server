@@ -69,19 +69,30 @@ class KakaoLoginSerializer(serializers.Serializer):
             value={"code": "c1.0.abcdef.0.apple_authorization_code"},
             request_only=True,
         ),
+        OpenApiExample(
+            "애플 인가 코드 + id_token",
+            summary="iOS 앱이 identityToken 도 함께 보내는 경우",
+            value={"code": "c1.0.abcdef.0.apple_authorization_code", "id_token": "eyJraWQiOiJ..."},
+            request_only=True,
+        ),
     ]
 )
 class AppleLoginSerializer(serializers.Serializer):
     """애플 소셜 로그인 요청.
 
-    애플 Sign In 인가 코드를 받는다. 서버는 Apple 의 token 엔드포인트에서 id_token
-    (JWT) 을 교환한 뒤 `sub` 를 provider_id 로 사용해 `SocialAccount` 와 매칭되는
-    `User` 를 찾거나 새로 생성한다. 탈퇴 시 token revocation 을 위해 refresh_token
-    도 함께 저장된다.
+    iOS 네이티브 Sign in with Apple 인가 코드를 받는다. 서버는 Apple 의 token 엔드포인트에서
+    id_token(JWT) 을 교환하고 Apple 공개키(JWKS) 로 서명·iss·aud·exp 를 검증한 뒤 `sub` 를
+    provider_id 로 사용해 `SocialAccount` 와 매칭되는 `User` 를 찾거나 새로 생성한다.
+    탈퇴 시 token revocation 을 위해 refresh_token 도 함께 저장된다.
     """
 
     code = serializers.CharField(
-        help_text="애플 Sign In 콜백으로 전달된 일회용 인가 코드.",
+        help_text="Apple SDK(ASAuthorizationController) 가 돌려준 일회용 인가 코드(authorizationCode).",
+    )
+    id_token = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="(선택) Apple SDK 가 돌려준 identityToken. 보내면 인가 코드와 같은 사용자인지 추가 검증한다.",
     )
 
 

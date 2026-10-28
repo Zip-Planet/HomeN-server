@@ -5,8 +5,9 @@
 인앱 알림함(`N1_NotificationInbox`)과 푸시 설정(`T5_My`)을 담당한다.
 알림함과 푸시는 **문구·랜딩이 동일**하므로 같은 레코드를 근거로 한다.
 
-> **푸시 발송은 인프라 미정으로 보류.** 현재는 인앱 알림 레코드 적재까지만 수행하고,
-> 발송 지점은 `apps/notifications/services.py` 에 TODO 로 표시돼 있다.
+> **푸시 인프라는 FCM(Firebase Cloud Messaging)** 이다. 기기 등록·해제 API와 유저 단위 발송
+> 서비스(`send_push_to_user`)·테스트 발송까지 구현돼 있고, 알림 이벤트(`notify`)와 발송의 **연결은
+> 아직 하지 않았다** (`apps/notifications/services.py` 의 TODO).
 
 ---
 
@@ -33,6 +34,21 @@
 
 마스터가 꺼지면 카테고리 값과 무관하게 푸시를 발송하지 않는다.
 **인앱 알림함 기록은 설정과 무관하게 항상 남는다** — 알림함은 기록이고 토글은 발송 제어다.
+
+### Device
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| user | ForeignKey(User) | 현재 이 기기로 로그인한 유저 |
+| registration_id | CharField(255, unique) | FCM registration token 또는 FID. **전역 유일** |
+| kind | CharField(choices) | `token`(기본) / `fid` — 발송 시 `Message(token=)` / `Message(fid=)` 분기 |
+| platform | CharField(choices) | `ios` / `android` |
+| app_version | CharField(32) | 앱 버전 (선택) |
+| is_active | BooleanField | 발송 대상 여부. 로그아웃·FCM UNREGISTERED 응답 시 False |
+| created_at | DateTimeField | 최초 등록 시각 |
+| last_seen_at | DateTimeField | 마지막 등록(업로드) 시각 — 등록 호출마다 갱신 |
+
+- 같은 `registration_id` 를 다른 유저가 등록하면 행을 새 유저로 옮긴다 (기기 공유 시 이전 계정 푸시 누출 방지).
+- FCM 은 registration token → FID(Firebase Installation ID) 로 전환 중이라 둘 다 받는다. 앱이 어느 모드를 켰는지 `kind` 로 알려준다.
 
 ---
 
@@ -61,6 +77,13 @@
 | 커맨드 | 스케줄 | 동작 |
 |--------|--------|------|
 | `purge_notifications` | 매일 (`0 4 * * *`, TZ=Asia/Seoul) | 7일 지난 알림 삭제 |
+| `send_test_push --user <id> [--title] [--body] [--dry-run]` | 수동 | 유저의 활성 기기 전부에 테스트 푸시 (백엔드 검증용) |
+
+### 푸시 발송 (`send_push_to_user`)
+- 유저의 `is_active` 기기를 `kind` 별로 묶어 `firebase-admin` 의 `send_each_for_multicast` 로 보낸다 (한 번에 500개).
+- FCM 이 `UNREGISTERED`(404) 또는 `INVALID_ARGUMENT`(400) 로 답한 기기는 `is_active=False` 처리한다.
+- `dry_run=True` 면 FCM 검증만 하고 실제 전달하지 않는다.
+- `FIREBASE_CREDENTIALS_JSON` 이 비어 있으면 `PushNotConfiguredError` (API 는 503 `push_unavailable`). 서버 기동·테스트에는 영향 없음.
 
 ---
 
@@ -95,6 +118,9 @@
 | GET | `/api/v1/notifications/settings/` | 푸시 설정 조회 (없으면 기본값 생성) |
 | PATCH | `/api/v1/notifications/settings/` | 푸시 설정 부분 수정 |
 | POST | `/api/v1/homes/mine/assignments/nudge/` | 분담안 생성 재촉 (구성원 → 관리자) |
+| PUT | `/api/v1/users/me/devices/` | 푸시 기기 등록 (201 생성 / 200 갱신, 앱 시작마다 호출) |
+| POST | `/api/v1/users/me/devices/unregister/` | 푸시 기기 해제 (로그아웃 시, 204 멱등) |
+| POST | `/api/v1/notifications/test/` | 본인 기기로 테스트 푸시 (분당 5회, `PUSH_TEST_ENDPOINT_ENABLED` 꺼지면 404) |
 
 **GET /api/v1/notifications/ 응답**
 ```json
@@ -115,3 +141,31 @@
   ]
 }
 ```
+
+**PUT /api/v1/users/me/devices/ 요청**
+```json
+{"registration_id": "dXh3…:APA91b…", "platform": "ios", "kind": "token", "app_version": "1.2.0"}
+```
+
+**응답 (201 생성 / 200 갱신)**
+```json
+{"registration_id": "dXh3…:APA91b…", "kind": "token", "platform": "ios", "app_version": "1.2.0", "is_active": true, "last_seen_at": "2026-10-28T14:00:00+09:00"}
+```
+
+**POST /api/v1/notifications/test/ 요청·응답**
+```json
+{"title": "HomeN 테스트 알림", "body": "푸시 설정이 정상적으로 동작하고 있어요.", "dry_run": false}
+```
+```json
+{"sent": 1, "failed": 0, "deactivated": 0}
+```
+
+---
+
+## 필수 환경 변수
+| 변수 | 설명 |
+|------|------|
+| `FIREBASE_CREDENTIALS_JSON` | Firebase 서비스 계정 JSON (한 줄). 비어 있으면 푸시 발송 비활성 |
+| `PUSH_TEST_ENDPOINT_ENABLED` | 테스트 푸시 엔드포인트 노출 여부 (기본 `DEBUG` 와 동일) |
+
+iOS 로 보내려면 Firebase 콘솔 > 프로젝트 설정 > Cloud Messaging 에 APNs 인증 키(.p8)가 등록돼 있어야 한다 (없으면 `ThirdPartyAuthError`).

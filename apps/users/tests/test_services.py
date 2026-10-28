@@ -1,11 +1,26 @@
-from unittest.mock import patch
+import time
+from unittest.mock import MagicMock, patch
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from apps.homes.models import HomeMember
 from apps.homes.tests.factories import HomeMemberFactory
 from apps.users.models import SocialAccount, User, UserProfileImage
-from apps.users.services import HomeAdminWithdrawalError, LogoutError, ProfileUpdateError, SocialLoginError, apple_login, kakao_login, logout_user, update_profile, withdraw_user
+from apps.users.services import (
+    HomeAdminWithdrawalError,
+    LogoutError,
+    ProfileUpdateError,
+    SocialLoginError,
+    _verify_apple_id_token,
+    apple_login,
+    kakao_login,
+    logout_user,
+    update_profile,
+    withdraw_user,
+)
 from apps.users.tests.factories import SocialAccountFactory, UserFactory
 
 KAKAO_USER_INFO = {
@@ -156,11 +171,88 @@ class TestKakaoLogin:
             _exchange_kakao_code("used-code")
 
 
+APPLE_BUNDLE_ID = "com.homen.test"
+
+
+def _rsa_pem_pair() -> tuple[bytes, bytes]:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    public_pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return private_pem, public_pem
+
+
+def _make_id_token(private_pem: bytes, **overrides) -> str:
+    now = int(time.time())
+    payload = {
+        "iss": "https://appleid.apple.com",
+        "aud": APPLE_BUNDLE_ID,
+        "sub": "apple.user.id.001",
+        "iat": now,
+        "exp": now + 600,
+        **overrides,
+    }
+    return jwt.encode(payload, private_pem, algorithm="RS256", headers={"kid": "test-kid"})
+
+
+def _jwk_client_returning(public_pem: bytes) -> MagicMock:
+    client = MagicMock()
+    client.get_signing_key_from_jwt.return_value.key = public_pem
+    return client
+
+
+class TestVerifyAppleIdToken:
+    @pytest.fixture(autouse=True)
+    def _bundle_id(self, settings):
+        settings.APPLE_CLIENT_ID = APPLE_BUNDLE_ID
+
+    def test_정상_토큰이면_페이로드를_반환한다(self):
+        private_pem, public_pem = _rsa_pem_pair()
+        token = _make_id_token(private_pem)
+
+        with patch("apps.users.services._apple_jwk_client", _jwk_client_returning(public_pem)):
+            payload = _verify_apple_id_token(token)
+
+        assert payload["sub"] == "apple.user.id.001"
+
+    def test_aud가_bundle_id가_아니면_실패한다(self):
+        private_pem, public_pem = _rsa_pem_pair()
+        token = _make_id_token(private_pem, aud="com.other.app")
+
+        with patch("apps.users.services._apple_jwk_client", _jwk_client_returning(public_pem)), pytest.raises(SocialLoginError):
+            _verify_apple_id_token(token)
+
+    def test_만료된_토큰이면_실패한다(self):
+        private_pem, public_pem = _rsa_pem_pair()
+        token = _make_id_token(private_pem, exp=int(time.time()) - 60)
+
+        with patch("apps.users.services._apple_jwk_client", _jwk_client_returning(public_pem)), pytest.raises(SocialLoginError):
+            _verify_apple_id_token(token)
+
+    def test_다른_키로_서명된_토큰이면_실패한다(self):
+        private_pem, _ = _rsa_pem_pair()
+        _, other_public_pem = _rsa_pem_pair()
+        token = _make_id_token(private_pem)
+
+        with patch("apps.users.services._apple_jwk_client", _jwk_client_returning(other_public_pem)), pytest.raises(SocialLoginError):
+            _verify_apple_id_token(token)
+
+    def test_공개키_조회_실패도_SocialLoginError로_감싼다(self):
+        client = MagicMock()
+        client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError("no kid")
+
+        with patch("apps.users.services._apple_jwk_client", client), pytest.raises(SocialLoginError):
+            _verify_apple_id_token("not-a-real-token")
+
+
 @pytest.mark.django_db
 class TestAppleLogin:
     @patch("apps.users.services._generate_apple_client_secret")
     @patch("apps.users.services._exchange_apple_code")
-    @patch("apps.users.services._decode_apple_id_token")
+    @patch("apps.users.services._verify_apple_id_token")
     def test_creates_new_user_on_first_login(self, mock_decode, mock_exchange, mock_secret):
         mock_secret.return_value = "fake-client-secret"
         mock_exchange.return_value = {"id_token": "fake-id-token"}
@@ -176,7 +268,7 @@ class TestAppleLogin:
 
     @patch("apps.users.services._generate_apple_client_secret")
     @patch("apps.users.services._exchange_apple_code")
-    @patch("apps.users.services._decode_apple_id_token")
+    @patch("apps.users.services._verify_apple_id_token")
     def test_returns_existing_user_on_second_login(self, mock_decode, mock_exchange, mock_secret):
         mock_secret.return_value = "fake-client-secret"
         mock_exchange.return_value = {"id_token": "fake-id-token"}
@@ -190,7 +282,7 @@ class TestAppleLogin:
 
     @patch("apps.users.services._generate_apple_client_secret")
     @patch("apps.users.services._exchange_apple_code")
-    @patch("apps.users.services._decode_apple_id_token")
+    @patch("apps.users.services._verify_apple_id_token")
     def test_refresh_token_저장(self, mock_decode, mock_exchange, mock_secret):
         mock_secret.return_value = "fake-client-secret"
         mock_exchange.return_value = {"id_token": "fake-id-token", "refresh_token": "apple-refresh-xyz"}
@@ -203,7 +295,7 @@ class TestAppleLogin:
 
     @patch("apps.users.services._generate_apple_client_secret")
     @patch("apps.users.services._exchange_apple_code")
-    @patch("apps.users.services._decode_apple_id_token")
+    @patch("apps.users.services._verify_apple_id_token")
     def test_재로그인_시_refresh_token_갱신(self, mock_decode, mock_exchange, mock_secret):
         mock_secret.return_value = "fake-client-secret"
         mock_exchange.return_value = {"id_token": "fake-id-token", "refresh_token": "new-refresh-token"}
@@ -224,6 +316,45 @@ class TestAppleLogin:
 
         with pytest.raises(SocialLoginError):
             apple_login(code="bad-code")
+
+    @patch("apps.users.services._generate_apple_client_secret")
+    @patch("apps.users.services._exchange_apple_code")
+    @patch("apps.users.services._verify_apple_id_token")
+    def test_클라이언트_id_token의_sub가_다르면_실패한다(self, mock_verify, mock_exchange, mock_secret):
+        mock_secret.return_value = "fake-client-secret"
+        mock_exchange.return_value = {"id_token": "exchanged-id-token"}
+        mock_verify.side_effect = lambda token: {
+            "sub": "apple.user.id.001" if token == "exchanged-id-token" else "someone.else"
+        }
+
+        with pytest.raises(SocialLoginError):
+            apple_login(code="auth-code", id_token="client-id-token")
+
+        assert User.objects.count() == 0
+
+    @patch("apps.users.services._generate_apple_client_secret")
+    @patch("apps.users.services._exchange_apple_code")
+    @patch("apps.users.services._verify_apple_id_token")
+    def test_클라이언트_id_token의_sub가_같으면_로그인된다(self, mock_verify, mock_exchange, mock_secret):
+        mock_secret.return_value = "fake-client-secret"
+        mock_exchange.return_value = {"id_token": "exchanged-id-token"}
+        mock_verify.return_value = APPLE_ID_TOKEN_PAYLOAD
+
+        result = apple_login(code="auth-code", id_token="client-id-token")
+
+        assert "access" in result
+        assert mock_verify.call_count == 2
+
+    @patch("apps.users.services.requests.post")
+    def test_토큰_교환_요청에_redirect_uri를_보내지_않는다(self, mock_post):
+        mock_post.return_value.json.return_value = {"id_token": "x"}
+        from apps.users.services import _exchange_apple_code
+
+        _exchange_apple_code("auth-code", "client-secret")
+
+        sent = mock_post.call_args.kwargs["data"]
+        assert "redirect_uri" not in sent
+        assert sent["grant_type"] == "authorization_code"
 
 
 @pytest.mark.django_db

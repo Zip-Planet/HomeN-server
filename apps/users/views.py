@@ -142,8 +142,9 @@ class KakaoLoginView(APIView):
 class AppleLoginView(APIView):
     """애플 소셜 로그인.
 
-    Apple 의 token 엔드포인트와 id_token(JWT) 검증을 거쳐 `sub` 를 provider_id 로
-    사용한다. Apple 의 refresh_token 은 탈퇴 시 token revocation 에 사용되므로
+    Apple 의 token 엔드포인트에서 교환한 id_token(JWT) 을 JWKS 로 검증한 뒤 `sub` 를
+    provider_id 로 사용한다. iOS 네이티브 플로우 전용이다 (Android 는 Apple 로그인을
+    쓰지 않는다). Apple 의 refresh_token 은 탈퇴 시 token revocation 에 사용되므로
     `SocialAccount.refresh_token` 컬럼에 저장한다.
     """
 
@@ -154,12 +155,16 @@ class AppleLoginView(APIView):
         summary="애플 소셜 로그인",
         description=(
             "## 🔥 설명\n"
-            "Apple Sign In 인가 코드(`code`)로 access/refresh JWT 를 발급한다. Apple `refresh_token` 은 "
-            "탈퇴 시 revocation 을 위해 `SocialAccount.refresh_token` 에 저장한다.\n\n"
+            "iOS 네이티브 Sign in with Apple 인가 코드(`code`)로 access/refresh JWT 를 발급한다. "
+            "서버는 Apple 과 코드를 교환해 받은 id_token 을 Apple 공개키(JWKS)로 검증(서명·iss·aud·exp)한다. "
+            "Apple `refresh_token` 은 탈퇴 시 revocation 을 위해 `SocialAccount.refresh_token` 에 "
+            "저장한다.\n\n"
             "## 📥 요청\n"
             "| 위치 | 필드 | 타입 | 필수 | 설명 |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| body | `code` | string | ✓ | Apple Sign In 콜백으로 전달된 1회용 인가 코드 |\n\n"
+            "| body | `code` | string | ✓ | Apple SDK 가 돌려준 1회용 인가 코드 (authorizationCode) |\n"
+            "| body | `id_token` | string | - | Apple SDK 가 돌려준 identityToken. "
+            "보내면 같은 사용자인지 추가 검증 |\n\n"
             "## 📤 응답 (200)\n"
             "| 위치 | 필드 | 타입 | 설명 |\n"
             "| --- | --- | --- | --- |\n"

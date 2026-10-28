@@ -23,7 +23,8 @@
 - **보관 7일**: 발생 후 7일이 지난 알림은 서버가 삭제한다(`purge_notifications` 커맨드). 응답의 `retention_days`로 화면 하단 안내 문구(예: "7일 전 알림까지 확인할 수 있어요")를 구성한다.
 - **딥링크**: `deep_link`는 탭 시 이동할 목적지 문자열이다. 대상 주차가 지났거나 이미 처리된 카드처럼 랜딩할 수 없으면 앱이 만료 토스트를 대신 노출한다.
 
-> **푸시 발송은 인프라 미정으로 현재 보류.** 지금은 인앱 알림 레코드 적재까지만 수행한다. FE는 알림함/설정 UI를 정상 구현하되, 실제 푸시 도착 여부에 의존하지 말 것.
+> **푸시 인프라는 FCM** 이다. 앱은 §3.6 대로 기기 식별자를 등록·해제하고, §3.7 테스트 발송으로 수신까지 확인할 수 있다.
+> 다만 알림 이벤트(분담안 생성 등)와 실제 푸시 발송의 **연결은 아직 되어 있지 않다**. 알림함/설정 UI는 정상 구현하되, 이벤트 푸시 도착에는 아직 의존하지 말 것.
 
 ---
 
@@ -51,6 +52,9 @@
 | GET | `/api/v1/notifications/settings/` | 푸시 설정 조회 (없으면 기본값 생성) |
 | PATCH | `/api/v1/notifications/settings/` | 푸시 설정 부분 수정 |
 | POST | `/api/v1/homes/mine/assignments/nudge/` | 분담안 생성 재촉 (구성원 → 관리자) |
+| PUT | `/api/v1/users/me/devices/` | 푸시 기기 등록 (앱 시작마다, 멱등) |
+| POST | `/api/v1/users/me/devices/unregister/` | 푸시 기기 해제 (로그아웃 시) |
+| POST | `/api/v1/notifications/test/` | 본인 기기로 테스트 푸시 (개발·검증용) |
 
 ---
 
@@ -357,6 +361,76 @@ curl -X POST -H "Authorization: Bearer <access>" \
 ```
 
 ---
+
+### 3.6 푸시 기기 등록 / 해제
+
+```
+PUT  /api/v1/users/me/devices/              # 등록 (앱 시작마다, 로그인 이후)
+POST /api/v1/users/me/devices/unregister/   # 해제 (로그아웃 직전)
+```
+
+**언제 호출하나**
+
+- 로그인 완료 후, 그리고 **앱을 시작할 때마다** Firebase Messaging SDK 에서 식별자를 받아 `PUT` 한다. 같은 식별자면 갱신만 되므로(200) 반복 호출해도 안전하다. 식별자가 바뀌는 콜백(`onNewToken` / `onRegistered`)에서도 호출한다.
+- 로그아웃 직전에 `unregister` 를 호출한다. 호출하지 않으면 로그아웃한 계정의 푸시가 그 기기로 계속 간다.
+- 같은 기기로 다른 계정이 로그인하면 서버가 기기를 새 계정으로 옮긴다.
+
+**PUT 요청 (body)**
+
+| 필드 | 타입 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `registration_id` | string | ✓ | FCM registration token 또는 FID |
+| `platform` | `ios` \| `android` | ✓ | 플랫폼 |
+| `kind` | `token` \| `fid` | - | 식별자 종류. 기본 `token`. Firebase Installation ID 모드(`register()`)를 켠 앱은 `fid` |
+| `app_version` | string | - | 앱 버전 |
+
+**PUT 응답 (201 새로 등록 / 200 갱신 — 본문 동일)**
+
+```json
+{
+  "registration_id": "dXh3…:APA91b…",
+  "kind": "token",
+  "platform": "ios",
+  "app_version": "1.2.0",
+  "is_active": true,
+  "last_seen_at": "2026-10-28T14:00:00+09:00"
+}
+```
+
+**unregister 요청 (body)** — `{"registration_id": "…"}` → 204 (없거나 타인 기기여도 204).
+
+**에러**
+
+| status | code | 의미 |
+| --- | --- | --- |
+| 400 | `registration_id` / `platform` / `kind` | 필드 누락·형식 오류 |
+| 401 | `authentication_failed` | 토큰 누락/만료 |
+
+### 3.7 테스트 푸시 (개발·검증용)
+
+```
+POST /api/v1/notifications/test/
+```
+
+호출자의 활성 기기 전부에 테스트 푸시를 보낸다. 기기 등록 → 실제 수신까지 end-to-end 로 확인하는 용도다.
+분당 5회 제한. 운영 환경(`PUSH_TEST_ENDPOINT_ENABLED=False`)에서는 404.
+
+| 필드 | 타입 | 필수 | 설명 |
+| --- | --- | --- | --- |
+| `title` | string | - | 기본 "HomeN 테스트 알림" |
+| `body` | string | - | 기본 "푸시 설정이 정상적으로 동작하고 있어요." |
+| `dry_run` | boolean | - | `true` 면 실제 전달 없이 FCM 검증만 (식별자 유효성 확인) |
+
+**응답 (200)** — `{"sent": 1, "failed": 0, "deactivated": 0}`
+`deactivated` 는 FCM 이 "무효한 식별자" 로 답해 서버가 비활성화한 기기 수다. 이 값이 1 이상이면 앱이 보낸 식별자가 잘못됐거나 Firebase 프로젝트가 다르다.
+
+| status | code | 의미 |
+| --- | --- | --- |
+| 404 | `not_found` | 테스트 엔드포인트가 꺼진 환경 |
+| 429 | `throttled` | 분당 5회 초과 |
+| 503 | `push_unavailable` | 서버에 FCM 자격증명이 없음 (백엔드에 문의) |
+
+**앱 쪽 준비물**: Firebase 프로젝트의 `google-services.json`(Android) / `GoogleService-Info.plist`(iOS), Firebase 콘솔에 APNs 키 업로드(iOS), Android 13+ 알림 권한 요청.
 
 ## 4. enum 정리
 

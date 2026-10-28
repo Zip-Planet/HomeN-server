@@ -95,6 +95,10 @@ REST_FRAMEWORK = {
     ],
     "EXCEPTION_HANDLER": "common.exceptions.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_RATES": {
+        # 본인 기기 테스트 푸시 — 남용 방지.
+        "push_test": "5/min",
+    },
 }
 
 SPECTACULAR_SETTINGS = {
@@ -166,7 +170,7 @@ KAKAO_ADMIN_KEY = env("KAKAO_ADMIN_KEY", default="")
 KAKAO_CLIENT_SECRET = env("KAKAO_CLIENT_SECRET", default="")
 KAKAO_REDIRECT_URI = env("KAKAO_REDIRECT_URI", default="http://localhost:8000/api/v1/auth/kakao/")
 
-# Apple Sign In
+# Apple Sign In (iOS 네이티브 플로우 전용 — APPLE_CLIENT_ID 는 앱 Bundle ID)
 APPLE_TEAM_ID = env("APPLE_TEAM_ID", default="APPLE_TEAM_ID_PLACEHOLDER")
 APPLE_CLIENT_ID = env("APPLE_CLIENT_ID", default="com.example.app.placeholder")
 APPLE_KEY_ID = env("APPLE_KEY_ID", default="APPLE_KEY_ID_PLACEHOLDER")
@@ -174,4 +178,10 @@ APPLE_PRIVATE_KEY = env(
     "APPLE_PRIVATE_KEY",
     default="-----BEGIN EC PRIVATE KEY-----\nPLACEHOLDER\n-----END EC PRIVATE KEY-----",
 ).replace("\\n", "\n")
-APPLE_REDIRECT_URI = env("APPLE_REDIRECT_URI", default="https://localhost/api/v1/auth/apple/")
+
+# Firebase Cloud Messaging (푸시 발송)
+# 서비스 계정 JSON 을 한 줄 문자열로 넣는다. 비어 있으면 발송 기능이 비활성(503)이며
+# 서버 기동·테스트에는 영향이 없다.
+FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")
+# 본인 기기로 테스트 푸시를 보내는 POST /api/v1/notifications/test/ 노출 여부 (기본: DEBUG 와 동일).
+PUSH_TEST_ENDPOINT_ENABLED = env.bool("PUSH_TEST_ENDPOINT_ENABLED", default=DEBUG)

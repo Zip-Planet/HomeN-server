@@ -1,16 +1,22 @@
-"""알림 적재 / 설정 갱신.
+"""알림 적재 / 설정 갱신 / 푸시 기기 등록·발송.
 
-발송(푸시) 인프라는 미정이므로 본 모듈은 **인앱 알림 레코드 적재**까지만
-수행하고, 실제 푸시 발송 지점은 TODO 로 표시한다. 알림함과 푸시는 문구·랜딩이
-동일하므로 발송 시에도 같은 레코드를 근거로 하면 된다.
+인앱 알림 레코드 적재와, FCM 기기 식별자 등록·해제, 유저 단위 푸시 발송을 담당한다.
+알림 이벤트(`notify`)와 푸시 발송(`send_push_to_user`)의 연결은 아직 하지 않았다 —
+`notify` 의 TODO 참고. 알림함과 푸시는 문구·랜딩이 동일하므로 연결 시 같은 레코드를
+근거로 하면 된다.
 """
 
+from dataclasses import dataclass
 from datetime import timedelta
+from itertools import groupby
 
 from django.utils import timezone
+from firebase_admin import exceptions as firebase_exceptions
+from firebase_admin import messaging
 
 from apps.homes.models import HomeMember
-from apps.notifications.models import Notification, NotificationCategory, NotificationSetting
+from apps.notifications import fcm
+from apps.notifications.models import Device, Notification, NotificationCategory, NotificationSetting
 from apps.users.models import User
 
 NOTIFICATION_RETENTION_DAYS = 7
@@ -102,8 +108,9 @@ def notify(
         for user in recipients
     ])
 
-    # TODO(푸시): 인프라 확정 후 `NotificationSetting.allows(category)` 가 True 인
-    # 수신자에게만 동일 문구/랜딩으로 앱푸시를 발송한다.
+    # TODO(푸시): `NotificationSetting.allows(category)` 가 True 인 수신자에게
+    # `send_push_to_user(user=..., title=title, body=body, data={"deep_link": deep_link})`
+    # 로 동일 문구/랜딩의 앱푸시를 발송한다 (기기 등록·발송 서비스는 준비됨).
     return created
 
 
@@ -207,3 +214,106 @@ def nudge_assignment(*, user: User, week_start) -> list[Notification]:
         body=f"{user.name}님이 분담안 생성을 기다리고 있어요. 이번 주 분담안을 생성해볼까요?",
         deep_link=f"assignment:{week_start}",
     )
+
+
+# ── 푸시 기기 등록 / 해제 / 발송 ──────────────────────────────────────────────
+
+_DEAD_REGISTRATION_ERRORS = (messaging.UnregisteredError, firebase_exceptions.InvalidArgumentError)
+"""FCM 이 "이 식별자는 더 이상 유효하지 않다" 로 답한 경우 — 기기를 비활성화한다."""
+
+
+@dataclass(frozen=True)
+class PushResult:
+    """`send_push_to_user` 결과 집계.
+
+    Attributes:
+        sent: 전달(또는 dry_run 검증) 성공 수.
+        failed: 실패 수 (비활성화된 기기 포함).
+        deactivated: 실패 중 식별자가 무효해 `is_active=False` 처리한 수.
+    """
+
+    sent: int
+    failed: int
+    deactivated: int
+
+
+def register_device(
+    *, user: User, registration_id: str, kind: str, platform: str, app_version: str = ""
+) -> tuple[Device, bool]:
+    """기기 식별자를 현재 유저에게 등록(없으면 생성, 있으면 갱신)합니다.
+
+    같은 기기에 다른 계정이 로그인한 경우 행을 현재 유저로 옮긴다. 호출할 때마다
+    `last_seen_at` 을 갱신하고 `is_active` 를 되살린다.
+
+    Args:
+        user: 현재 로그인한 유저.
+        registration_id: FCM registration token 또는 FID.
+        kind: `Device.Kind` 값.
+        platform: `Device.Platform` 값.
+        app_version: 앱 버전 (선택).
+
+    Returns:
+        (Device, 새로 생성됐는지 여부).
+    """
+    device, created = Device.objects.update_or_create(
+        registration_id=registration_id,
+        defaults={
+            "user": user,
+            "kind": kind,
+            "platform": platform,
+            "app_version": app_version,
+            "is_active": True,
+            "last_seen_at": timezone.now(),
+        },
+    )
+    return device, created
+
+
+def unregister_device(*, user: User, registration_id: str) -> None:
+    """본인 기기를 발송 대상에서 제외합니다 (로그아웃 시). 없거나 타인 기기면 무시합니다."""
+    Device.objects.filter(user=user, registration_id=registration_id).update(is_active=False)
+
+
+def send_push_to_user(
+    *, user: User, title: str, body: str, data: dict[str, str] | None = None, dry_run: bool = False
+) -> PushResult:
+    """유저의 활성 기기 전부에 푸시를 보냅니다.
+
+    식별자 종류(token/fid)별로 나눠 FCM 에 보내고, FCM 이 무효하다고 답한 기기
+    (UNREGISTERED / INVALID_ARGUMENT) 는 `is_active=False` 로 바꾼다.
+
+    Args:
+        user: 수신 유저.
+        title: 알림 제목.
+        body: 알림 본문.
+        data: 앱이 받을 추가 데이터.
+        dry_run: True 면 FCM 검증만 하고 실제 전달하지 않는다.
+
+    Returns:
+        발송 결과 집계.
+
+    Raises:
+        fcm.PushNotConfiguredError: FCM 자격증명이 없을 때.
+    """
+    devices = list(Device.objects.filter(user=user, is_active=True).order_by("kind", "id"))
+    if not devices:
+        return PushResult(sent=0, failed=0, deactivated=0)
+
+    sent = failed = 0
+    dead_ids: list[str] = []
+    for kind, group in groupby(devices, key=lambda d: d.kind):
+        ids = [d.registration_id for d in group]
+        response = fcm.send_multicast(
+            registration_ids=ids, kind=kind, title=title, body=body, data=data, dry_run=dry_run
+        )
+        for registration_id, item in zip(ids, response.responses, strict=True):
+            if item.success:
+                sent += 1
+                continue
+            failed += 1
+            if isinstance(item.exception, _DEAD_REGISTRATION_ERRORS):
+                dead_ids.append(registration_id)
+
+    if dead_ids:
+        Device.objects.filter(registration_id__in=dead_ids).update(is_active=False)
+    return PushResult(sent=sent, failed=failed, deactivated=len(dead_ids))
